@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { fetchSpace } from './net/api';
-import { SPACE_ID, wsUrl } from './net/config';
+import { SPACE_ID, resolveSpaceId, wsUrl } from './net/config';
 import { Net, type NetStatus } from './net/ws';
 import { WorldRenderer } from './world/renderer';
+import { uuid } from './net/protocol';
 import { ChatSheet, type ChatMessage } from './ui/ChatSheet';
 import { Hud } from './ui/Hud';
 import { JoinScreen } from './ui/JoinScreen';
@@ -72,7 +73,20 @@ export function App() {
     localStorage.setItem('hearth:name', trimmed);
     setPhase('loading');
 
-    const net = new Net(wsUrl(), {
+    void (async () => {
+      // Resolve the space BEFORE connecting so a stale default (404) falls back
+      // to the server's first space instead of leaving the user on the loading
+      // gate forever.
+      const space = await resolveSpaceId();
+      // Guest identity: stable per-browser device key (no signup wall).
+      // uuid() falls back to Math.random on insecure (http) origins where
+      // crypto.randomUUID is undefined.
+      let deviceKey = localStorage.getItem('hearth:device');
+      if (!deviceKey) {
+        deviceKey = uuid();
+        localStorage.setItem('hearth:device', deviceKey);
+      }
+      const net = new Net(wsUrl(), {
       onStatus: setStatus,
       onWelcome: (d) => {
         selfIdRef.current = d.selfId;
@@ -81,7 +95,8 @@ export function App() {
         if (d.world) r.setWorld(d.world);
         r.setSelf(d.selfId, trimmed);
         r.applyRoster(d.roster);
-        if (d.space) setSpaceName(d.space);
+        const sp = d.space ?? d.spaceId;
+        if (sp) setSpaceName(sp);
         setPhase('world');
       },
       onState: (states) => rendererRef.current?.updateState(states),
@@ -136,18 +151,19 @@ export function App() {
       },
     });
     netRef.current = net;
-    net.connect({ name: trimmed, lang: 'en', space: SPACE_ID, guest: true });
+    net.connect({ name: trimmed, lang: 'en', space, guest: true, deviceKey });
 
     // early world fetch → tiles render before welcome arrives
-    fetchSpace(SPACE_ID).then((sp) => {
+    fetchSpace(space).then((sp) => {
       const w = sp && typeof sp === 'object' ? (sp as Record<string, unknown>).world ?? sp : null;
       if (w) rendererRef.current?.setWorld(w);
     });
+    })();
   }, []);
 
   const sendChat = useCallback(
     (text: string) => {
-      const nonce = crypto.randomUUID();
+      const nonce = uuid();
       setMessages((prev) => [
         ...prev,
         {

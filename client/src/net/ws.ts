@@ -11,6 +11,7 @@ export interface JoinInfo {
   lang: string;
   space: string;
   guest: boolean;
+  deviceKey?: string;
 }
 
 export interface NetHandlers {
