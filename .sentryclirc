@@ -1,0 +1,16 @@
+# Hearth Sentry CLI config — CONFIG ONLY, NO SECRETS.
+# The auth token MUST come from the SENTRY_AUTH_TOKEN env var
+# (GitHub Actions secret / CI env), never from this file.
+# Placeholders below — replace with the real Sentry org/project slugs.
+# See docs/SENTRY.md for the full integration guide.
+
+[auth]
+token =
+
+[defaults]
+org = hearth-org        # TODO: Sentry org slug (Settings -> General -> Organization slug)
+project = hearth-server # TODO: Sentry project slug (create: hearth-server, hearth-client)
+url = https://sentry.io # self-hosted? point at your Sentry instance instead
+
+[log]
+level = info

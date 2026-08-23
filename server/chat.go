@@ -64,11 +64,11 @@ func (c *Client) handleChat(msg map[string]any) {
 		return
 	}
 
-	payload := map[string]any{
-		"type": "chat", "channel": channel,
-		"from": c.Entity.Name, "fromId": c.Entity.ID,
-		"text": text, "ts": time.Now().UTC().Format(time.RFC3339),
-	}
+		payload := map[string]any{
+			"channel": channel,
+			"from":    c.Entity.Name, "fromId": c.Entity.ID,
+			"text": text, "ts": time.Now().UTC().Format(time.RFC3339),
+		}
 
 	sp := c.hub.space(c.spaceID)
 	if sp == nil {
@@ -76,11 +76,11 @@ func (c *Client) handleChat(msg map[string]any) {
 	}
 	switch channel {
 	case "space":
-		sp.BroadcastToClients(payload)
+		sp.BroadcastEnvelope("chat", payload)
 	case "proximity":
 		for _, e := range sp.AOI(c.Entity.X, c.Entity.Y, aoiRadius, c.Entity.ID) {
 			if e.Client != nil {
-				e.Client.enqueueJSON(payload)
+				e.Client.emit("chat", payload)
 			}
 		}
 	case "dm":
@@ -90,7 +90,7 @@ func (c *Client) handleChat(msg map[string]any) {
 			c.sendError("peer_not_found", "dm target offline: "+to)
 			return
 		}
-		target.Client.enqueueJSON(payload)
+		target.Client.emit("chat", payload)
 	}
 
 	if err := c.hub.store.InsertMessage(c.spaceID, c.Session.ID, c.Session.UserID, c.Entity.Name, channel, text); err != nil {
@@ -110,6 +110,12 @@ func (sp *SpaceState) BroadcastToClients(v any) {
 			e.Client.enqueue(b)
 		}
 	}
+}
+
+// BroadcastEnvelope wraps d in the frozen envelope ({"v":1,"t":t,"d":d}) and
+// broadcasts to every connected player in this space.
+func (sp *SpaceState) BroadcastEnvelope(t string, d map[string]any) {
+	sp.BroadcastToClients(map[string]any{"v": 1, "t": t, "d": d})
 }
 
 func (c *Client) handleEdit(msg map[string]any) {
@@ -140,8 +146,8 @@ func (c *Client) handleEdit(msg map[string]any) {
 	if err := c.hub.store.SaveWorld(sp.World); err != nil {
 		log.Printf("save world after edit: %v", err)
 	}
-	sp.BroadcastToClients(map[string]any{
-		"type": "edit", "spaceId": sp.World.ID, "x": x, "y": y,
+	sp.BroadcastEnvelope("edit", map[string]any{
+		"spaceId": sp.World.ID, "x": x, "y": y,
 		"tile": map[string]any{"t": t}, "by": c.Entity.ID,
 	})
 	log.Printf("edit: %s set (%d,%d) = %s", c.Entity.Name, x, y, t)

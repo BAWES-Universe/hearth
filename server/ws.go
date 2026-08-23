@@ -95,8 +95,15 @@ func (c *Client) enqueueJSON(v any) {
 	c.enqueue(b)
 }
 
+// emit sends a PROTOCOL.md envelope: {"v":1,"t":"<type>","d":{...}}.
+// All server->client messages must go through this so the wire format stays
+// the frozen contract. (Legacy flat "type" messages are removed.)
+func (c *Client) emit(t string, d map[string]any) {
+	c.enqueueJSON(map[string]any{"v": 1, "t": t, "d": d})
+}
+
 func (c *Client) sendError(code, msg string) {
-	c.enqueueJSON(map[string]any{"type": "error", "code": code, "message": msg})
+	c.emit("error", map[string]any{"code": code, "message": msg})
 }
 
 // handleWS upgrades the connection, resolves guest auth (cookie or ?deviceKey=)
@@ -240,7 +247,7 @@ func (c *Client) handleMessage(raw []byte) {
 	case "bot_msg":
 		c.handleBotMsg(msg)
 	case "ping":
-		c.enqueueJSON(map[string]any{"type": "pong", "t": time.Now().UnixMilli()})
+		c.emit("pong", map[string]any{"t": time.Now().UnixMilli()})
 	default:
 		c.sendError("unknown_type", "unknown message type: "+t)
 	}
@@ -338,8 +345,8 @@ func (c *Client) handleJoin(msg map[string]any) {
 		c.hub.store.SetUserName(sess.UserID, name)
 	}
 
-	c.enqueueJSON(map[string]any{
-		"type": "welcome", "sessionId": sess.ID, "entityId": e.ID,
+	c.emit("welcome", map[string]any{
+		"sessionId": sess.ID, "selfId": e.ID, "entityId": e.ID,
 		"spaceId": spaceID, "name": e.Name, "x": e.X, "y": e.Y, "dir": e.Dir,
 		"world": sp.World.GeoJSON(),
 	})
@@ -400,9 +407,9 @@ func (c *Client) handlePortal(msg map[string]any) {
 	c.setSpace(p.TargetSpace)
 	c.setEntity(c.Entity)
 	c.setPos(p.TargetX, p.TargetY)
-	c.enqueueJSON(map[string]any{
-		"type": "portal", "portalId": p.ID,
-		"spaceId": p.TargetSpace, "x": p.TargetX, "y": p.TargetY,
+	c.emit("portal", map[string]any{
+		"portalId": p.ID,
+		"spaceId":  p.TargetSpace, "x": p.TargetX, "y": p.TargetY,
 	})
 	log.Printf("portal: %s used %s %s -> %s (%d,%d)", c.Entity.Name, oldSpace, p.ID, p.TargetSpace, p.TargetX, p.TargetY)
 }
@@ -418,9 +425,7 @@ func (c *Client) handleSignal(msg map[string]any) {
 		c.sendError("peer_not_found", "signal target offline: "+to)
 		return
 	}
-	target.Client.enqueueJSON(map[string]any{
-		"type": "signal", "from": c.Entity.ID, "data": msg["data"],
-	})
+	target.Client.emit("signal", map[string]any{"from": c.Entity.ID, "data": msg["data"]})
 	log.Printf("signal relay: %s -> %s (type=%v)", c.Entity.ID[:8], to, msg["dataType"])
 }
 
@@ -436,8 +441,8 @@ func (c *Client) handleMedia(msg map[string]any) {
 		return
 	}
 	// Pass-through relay for now — the media/ package integrates later.
-	target.Client.enqueueJSON(map[string]any{
-		"type": "media", "from": c.Entity.ID,
+	target.Client.emit("media", map[string]any{
+		"from": c.Entity.ID,
 		"action": getString(msg, "action"), "data": msg["data"],
 	})
 	log.Printf("media relay (pass-through, media/ integration pending): %s -> %s action=%s",
@@ -469,14 +474,13 @@ func (c *Client) handleBotMsg(msg map[string]any) {
 	}
 	if to != "" {
 		if t := c.hub.findEntity(to); t != nil && t.Client != nil {
-			t.Client.enqueueJSON(map[string]any{"type": "bot_msg", "from": c.Entity.ID, "text": text})
+			t.Client.emit("bot_msg", map[string]any{"from": c.Entity.ID, "text": text})
 		} else {
 			c.sendError("peer_not_found", "bot_msg target offline: "+to)
 			return
 		}
 	} else {
-		payload := map[string]any{"type": "bot_msg", "from": c.Entity.ID, "text": text}
-		sp.BroadcastToClients(payload)
+		sp.BroadcastEnvelope("bot_msg", map[string]any{"from": c.Entity.ID, "text": text})
 	}
 	c.hub.store.InsertMessage(c.spaceID, c.Session.ID, c.Session.UserID, c.Entity.Name, "bot", text)
 	log.Printf("bot_msg relay: %s -> %s", c.Entity.Name, to)

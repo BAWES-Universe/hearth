@@ -12,6 +12,15 @@ import (
 // TestRenegoMinimal: does a plain pion answerer fire onTrack for a track added
 // by the offerer in a SECOND offer (renegotiation)? Isolates pion behavior
 // from our SFU wiring.
+//
+// This documents the publisher side of the frozen design (PROTOCOL.md:
+// "publish unlimited"): the SFU ANSWERS publisher offers, so publisher-side
+// renegotiation must work in pion for the SFU to rely on it. (The no-
+// renegotiation rule is SUBSCRIBER-side only — the loopback test proves that.)
+//
+// Pion behavior note: OnTrack fires on the FIRST RTP packet for a track, not
+// at SDP negotiation time — so this test must write RTP for the round-1
+// (audio) track too, or the answerer never observes it.
 func TestRenegoMinimal(t *testing.T) {
 	cfg := webrtc.Configuration{}
 
@@ -63,13 +72,38 @@ func TestRenegoMinimal(t *testing.T) {
 		}
 	}
 
+	// Pump RTP into a local track until done is closed (stands in for the
+	// encoder). OnTrack only fires once RTP arrives, so every track we want
+	// to observe must actually be written.
+	done := make(chan struct{})
+	defer close(done)
+	pump := func(tr *webrtc.TrackLocalStaticRTP, pt uint8, ssrc uint32) {
+		go func() {
+			var seq uint16
+			var ts uint32
+			tick := time.NewTicker(10 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-tick.C:
+				}
+				_ = tr.WriteRTP(&rtp.Packet{Header: rtp.Header{Version: 2, PayloadType: pt, SequenceNumber: seq, Timestamp: ts, SSRC: ssrc}, Payload: []byte{1, 2, 3}})
+				seq++
+				ts += 9000
+			}
+		}()
+	}
+
 	// offer 1: audio
 	audio, _ := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}, "audio", "mic")
 	if _, err := offerer.AddTrack(audio); err != nil {
 		t.Fatal(err)
 	}
 	exchange()
-	t.Logf("round 1 done")
+	pump(audio, 111, 0xA0000001)
+	t.Logf("round 1 done (audio offered)")
 
 	// offer 2: video (renegotiation)
 	video, _ := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeVP8, ClockRate: 90000}, "camera", "camera-low")
@@ -77,23 +111,8 @@ func TestRenegoMinimal(t *testing.T) {
 		t.Fatal(err)
 	}
 	exchange()
-	t.Logf("round 2 done")
-
-	// write video RTP for 500ms
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		seq := uint16(0)
-		for {
-			select {
-			case <-done:
-				return
-			case <-time.After(10 * time.Millisecond):
-			}
-			_ = video.WriteRTP(&rtp.Packet{Header: rtp.Header{Version: 2, PayloadType: 96, SequenceNumber: seq, Timestamp: uint32(seq) * 9000, SSRC: 0xB0000001}, Payload: []byte{1, 2, 3}})
-			seq++
-		}
-	}()
+	pump(video, 96, 0xB0000001)
+	t.Logf("round 2 done (video offered via renegotiation)")
 
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
@@ -111,5 +130,5 @@ func TestRenegoMinimal(t *testing.T) {
 	if len(got) < 2 {
 		t.Fatalf("FAIL: renegotiated video track not seen; got %v", got)
 	}
-	t.Logf("PASS: pion renegotiation delivers the second track")
+	t.Logf("PASS: pion renegotiation delivers the second track (round-1 audio + round-2 video)")
 }

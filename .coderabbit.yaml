@@ -1,0 +1,44 @@
+# CodeRabbit AI review config for BAWES-Universe/hearth.
+# Docs: https://docs.coderabbit.ai/configuration
+language: en-US
+early_access: false
+
+reviews:
+  # "review threshold": chill = comments only · assertive = comments + request
+  # changes on real issues (recommended) · best-practice = strictest.
+  profile: assertive
+
+  # CodeRabbit can set the PR status to "changes requested" when it finds
+  # blocking issues. CI + CodeRabbit must both pass before merge.
+  request_changes_workflow: true
+
+  high_level_summary: true
+  high_level_summary_placeholder: '@coderabbitai summary'
+  review_status: true
+  collapse_walkthrough: false
+
+  auto_review:
+    enabled: true            # review every PR automatically
+    drafts: false            # ...but not while it's a draft
+    base_branches:
+      - main
+
+  # Repo-specific rules CodeRabbit applies on top of its defaults.
+  # Languages: Go (server/, media/) + TypeScript (client/).
+  path_instructions:
+    - path: '**/*.{go,ts,tsx}'
+      instructions: |
+        - Hearth wire protocol v0 is FROZEN (see PROTOCOL.md). Any change to
+          envelope shapes, message types, or wire behavior MUST update
+          PROTOCOL.md AND the protocol tests in the SAME commit
+          (server/*_test.go, client/src/net/protocol.test.ts) — round+sign rule.
+        - Go code: idiomatic, `go vet ./...` and `go test ./...` must pass in
+          both server/ and media/; no leaked goroutines or unchecked errors.
+        - TypeScript: strict mode; avoid `any`; `npm run build` and `npm test`
+          must pass in client/. Protocol shapes must stay in sync with
+          client/src/net/protocol.ts.
+        - Never commit secrets or tokens — config via env vars only
+          (SENTRY_AUTH_TOKEN, SENTRY_DSN, ...). See .sentryclirc / docs/SENTRY.md.
+
+chat:
+  auto_reply: true           # answer PR questions via @coderabbitai

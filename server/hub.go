@@ -386,13 +386,11 @@ func (h *Hub) broadcastStates() {
 			}
 			near := sp.AOI(lx, ly, aoiRadius, eid)
 			if c.shouldSendState(sp.World.ID, near, now) {
-				payload := map[string]any{
-					"type":     "state",
+				c.emit("state", map[string]any{
 					"spaceId":  sp.World.ID,
 					"entities": entityListJSON(near),
 					"t":        now.UnixMilli(),
-				}
-				c.enqueueJSON(payload)
+				})
 			}
 		}
 	}
