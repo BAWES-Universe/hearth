@@ -4,13 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync"
+
+	"hearth/hmf"
 )
 
+// hmfVersion is the HMF format version this server speaks (docs/HMF-v1.md).
+const hmfVersion = "v1"
+
 // Tile is a sparse map tile. Only non-floor tiles are stored/serialized.
+// T is the canonical string name (frozen palette); TileID is the numeric id
+// derived at serialization time for the client palette.
 type Tile struct {
-	X int    `json:"x"`
-	Y int    `json:"y"`
-	T string `json:"t"`
+	X      int    `json:"x"`
+	Y      int    `json:"y"`
+	T      string `json:"t"`
+	TileID int    `json:"tileId,omitempty"`
 }
 
 type Zone struct {
@@ -36,8 +45,19 @@ type Spawn struct {
 	Y int `json:"y"`
 }
 
+// ChunkInfo is one chunk's revision summary (HMF v1). Rev increments on every
+// op that touches the chunk; clients use it to detect missed deltas and
+// trigger refetch+replay (see docs/HMF-v1.md).
+type ChunkInfo struct {
+	CX  int `json:"cx"`
+	CY  int `json:"cy"`
+	Rev int `json:"rev"`
+}
+
 // World is a persistent space: tile map + zones + portals + spawn point.
 // Live entity positions are RAM-only (see SpaceState in hub.go).
+// HMF v1: tiles live in 16x16 chunks (map_chunks table); ChunkRevs mirrors
+// the persisted per-chunk revision counters in RAM for cheap reads.
 type World struct {
 	ID      string           `json:"id"`
 	Name    string           `json:"name"`
@@ -47,11 +67,71 @@ type World struct {
 	Zones   []Zone           `json:"zones"`
 	Portals []Portal         `json:"portals"`
 	Spawn   Spawn            `json:"spawn"`
+
+	// HMF v1 metadata.
+	HMFVersion  string         `json:"hmf,omitempty"`
+	IsPublished bool           `json:"isPublished"`
+	IsShowcase  bool           `json:"isShowcase"`
+	ChunkRevs   map[string]int `json:"-"` // "cx,cy" -> rev
+
+	mu sync.RWMutex
 }
+
+// --- tile palette (frozen mapping shared with the client editor) ---
+// The canonical palette lives in the hmf package (hearth/hmf) so the server,
+// the showcase fixture builder, and tests share one definition.
+
+// tileIDs maps canonical tile names to numeric ids (frozen — hmf.Palette).
+var tileIDs = hmf.Palette
+
+// tileNames is the reverse id -> name map.
+var tileNames = hmf.TileNames()
+
+// passableTiles marks which tiles allow walking (movement grid + A*).
+// Collision flags in HMF v1 are derived from this at build time — the
+// palette is the single source of truth for passability.
+var passableTiles = hmf.PassableSet
+
+// TileType is one palette entry, embedded in the world GeoJSON so clients can
+// build their editor palette from the server's source of truth.
+type TileType struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Passable bool   `json:"passable"`
+}
+
+func tileTypeList() []TileType {
+	ids := make([]int, 0, len(tileNames))
+	for id := range tileNames {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	out := make([]TileType, 0, len(ids))
+	for _, id := range ids {
+		name := tileNames[id]
+		out = append(out, TileType{ID: id, Name: name, Passable: passableTiles[name]})
+	}
+	return out
+}
+
+// TileID returns the numeric palette id for a tile name (0 for unknown).
+func TileID(name string) int { return hmf.TileID(name) }
+
+// TileName returns the palette name for a numeric id ("" for unknown).
+func TileName(id int) string { return hmf.TileName(id) }
+
+// IsPassableTileName reports whether a tile name allows walking.
+func IsPassableTileName(name string) bool { return hmf.Passable(name) }
 
 func (w *World) tileKey(x, y int) string { return fmt.Sprintf("%d,%d", x, y) }
 
 func (w *World) SetTile(x, y int, t string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.setTileLocked(x, y, t)
+}
+
+func (w *World) setTileLocked(x, y int, t string) {
 	if w.Tiles == nil {
 		w.Tiles = map[string]*Tile{}
 	}
@@ -63,17 +143,24 @@ func (w *World) SetTile(x, y int, t string) {
 }
 
 func (w *World) TileAt(x, y int) string {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	if t, ok := w.Tiles[w.tileKey(x, y)]; ok {
 		return t.T
 	}
 	return "floor"
 }
 
-// TileList returns tiles sorted by y then x (deterministic output).
+// TileList returns tiles sorted by y then x (deterministic output) with the
+// numeric tileId derived from the frozen palette.
 func (w *World) TileList() []Tile {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	out := make([]Tile, 0, len(w.Tiles))
 	for _, t := range w.Tiles {
-		out = append(out, *t)
+		c := *t
+		c.TileID = tileIDs[c.T]
+		out = append(out, c)
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Y != out[j].Y {
@@ -85,6 +172,8 @@ func (w *World) TileList() []Tile {
 }
 
 func (w *World) FindPortal(id string) *Portal {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
 	for i := range w.Portals {
 		if w.Portals[i].ID == id {
 			return &w.Portals[i]
@@ -93,18 +182,104 @@ func (w *World) FindPortal(id string) *Portal {
 	return nil
 }
 
-// GeoJSON is the static portion of the world document.
-func (w *World) GeoJSON() map[string]any {
-	return map[string]any{
-		"id":      w.ID,
-		"name":    w.Name,
-		"width":   w.Width,
-		"height":  w.Height,
-		"tiles":   w.TileList(),
-		"zones":   w.Zones,
-		"portals": w.Portals,
-		"spawn":   w.Spawn,
+// --- HMF v1 chunk revisions ---
+
+func chunkKey(cx, cy int) string { return fmt.Sprintf("%d,%d", cx, cy) }
+
+func (w *World) initChunkRevs() {
+	if w.ChunkRevs == nil {
+		w.ChunkRevs = map[string]int{}
 	}
+}
+
+// bumpChunkRev increments the RAM revision counter of a chunk (persisted by
+// the store on the next SaveChunk). Callers hold no World lock.
+func (w *World) bumpChunkRev(cx, cy int) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.initChunkRevs()
+	k := chunkKey(cx, cy)
+	w.ChunkRevs[k]++
+	return w.ChunkRevs[k]
+}
+
+// ChunkRev returns the current revision of a chunk (0 = pristine).
+func (w *World) ChunkRev(cx, cy int) int {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.ChunkRevs[chunkKey(cx, cy)]
+}
+
+// ChunkSummary lists the revision of every known chunk (for the world doc).
+func (w *World) ChunkSummary() []ChunkInfo {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	keys := make([]string, 0, len(w.ChunkRevs))
+	for k := range w.ChunkRevs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]ChunkInfo, 0, len(keys))
+	for _, k := range keys {
+		var cx, cy int
+		fmt.Sscanf(k, "%d,%d", &cx, &cy)
+		out = append(out, ChunkInfo{CX: cx, CY: cy, Rev: w.ChunkRevs[k]})
+	}
+	return out
+}
+
+// GeoJSON is the static portion of the world document (HMF v1 header + tiles
+// + chunks revision summary + palette).
+func (w *World) GeoJSON() map[string]any {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return map[string]any{
+		"id":          w.ID,
+		"name":        w.Name,
+		"width":       w.Width,
+		"height":      w.Height,
+		"tiles":       w.TileListLocked(),
+		"zones":       w.Zones,
+		"portals":     w.Portals,
+		"spawn":       w.Spawn,
+		"hmf":         hmfVersion,
+		"isPublished": w.IsPublished,
+		"isShowcase":  w.IsShowcase,
+		"palette":     tileTypeList(),
+		"chunks":      w.chunkSummaryLocked(),
+	}
+}
+
+// TileListLocked returns the tile list; caller must hold the read lock.
+func (w *World) TileListLocked() []Tile {
+	out := make([]Tile, 0, len(w.Tiles))
+	for _, t := range w.Tiles {
+		c := *t
+		c.TileID = tileIDs[c.T]
+		out = append(out, c)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Y != out[j].Y {
+			return out[i].Y < out[j].Y
+		}
+		return out[i].X < out[j].X
+	})
+	return out
+}
+
+func (w *World) chunkSummaryLocked() []ChunkInfo {
+	keys := make([]string, 0, len(w.ChunkRevs))
+	for k := range w.ChunkRevs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]ChunkInfo, 0, len(keys))
+	for _, k := range keys {
+		var cx, cy int
+		fmt.Sscanf(k, "%d,%d", &cx, &cy)
+		out = append(out, ChunkInfo{CX: cx, CY: cy, Rev: w.ChunkRevs[k]})
+	}
+	return out
 }
 
 // WorldJSON is the full world document incl. live entities (GET /api/spaces/{id}).
@@ -118,13 +293,16 @@ func (w *World) WorldJSON(entities []*EntitySnap) map[string]any {
 	return m
 }
 
-// defaultWorld builds the seeded 32x32 world. hearth and garden share the same
-// tile file; their portals point at each other (offset landing spots).
+// defaultWorld builds the seeded 32x32 town-square hub. Its portals to the
+// showcase worlds (garden/lab/hall) are patched in by SeedDefaults after the
+// showcase fixtures are seeded (append-if-missing, never clobbering).
 func defaultWorld(id, name string) *World {
 	w := &World{
 		ID: id, Name: name, Width: 32, Height: 32,
-		Tiles: map[string]*Tile{},
-		Spawn: Spawn{X: 16, Y: 16},
+		Tiles:     map[string]*Tile{},
+		Spawn:     Spawn{X: 16, Y: 16},
+		HMFVersion: hmfVersion,
+		ChunkRevs: map[string]int{},
 	}
 	w.Zones = []Zone{{ID: "main", Name: "Main Hall", X: 0, Y: 0, W: 32, H: 32}}
 
@@ -148,18 +326,6 @@ func defaultWorld(id, name string) *World {
 	w.SetTile(25, 4, "wall")
 	w.SetTile(24, 5, "wall")
 	w.SetTile(25, 5, "wall")
-
-	if id == "hearth" {
-		w.Portals = []Portal{
-			{ID: "garden-east", X: 4, Y: 16, TargetSpace: "garden", TargetX: 24, TargetY: 16},
-			{ID: "garden-west", X: 27, Y: 16, TargetSpace: "garden", TargetX: 8, TargetY: 16},
-		}
-	} else {
-		w.Portals = []Portal{
-			{ID: "hearth-west", X: 8, Y: 16, TargetSpace: "hearth", TargetX: 4, TargetY: 16},
-			{ID: "hearth-east", X: 24, Y: 16, TargetSpace: "hearth", TargetX: 27, TargetY: 16},
-		}
-	}
 	return w
 }
 
