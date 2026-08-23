@@ -145,13 +145,32 @@ func (c *Client) handleEdit(msg map[string]any) {
 		return
 	}
 
-	// Ownership gate: only the world owner may mutate a world, and the
-	// showcase/seed worlds are read-only to clients. Without this, any
-	// authenticated client could paint or publish any world (including
-	// town-square and the showcase worlds).
+	// Ownership gate: only the world owner may mutate a USER world; without
+	// this, any authenticated client could paint or publish any world.
+	// Showcase worlds are the shared co-authoring hub (v2 plan §1/§7 — the T1
+	// exit demo edits a showcase wall live; bots and humans co-build there),
+	// so any authenticated session may edit showcase content. Denies on any
+	// lookup error (authz gates fail closed).
 	if !c.canEditSpace(sp.World) {
 		c.sendError("edit_forbidden", "only the owner of this world can edit it")
 		return
+	}
+
+	// Agent-facing idempotency (docs/BOT-PROTOCOL.md): an op already applied
+	// under the same (space, idem) key is acknowledged as deduped instead of
+	// being re-applied — replaying a bot_run is safe and free.
+	if op.Idem != "" {
+		if seq, ok := c.hub.store.OpIdemSeq(sp.World.ID, op.Idem); ok {
+			op.Seq = seq
+			op.By = c.Entity.ID
+			if c.Session != nil {
+				op.Actor = c.Session.UserID
+			}
+			ack := &EditAck{Op: op, Deduped: true}
+			c.broadcastEditAck(sp, ack)
+			log.Printf("edit[%s] %s: op=%s deduped idem=%s seq=%d", sp.World.ID, c.Entity.Name, op.Op, op.Idem, seq)
+			return
+		}
 	}
 
 	// Allocate the op seq BEFORE applying: an applied op must never carry
@@ -176,17 +195,31 @@ func (c *Client) handleEdit(msg map[string]any) {
 		log.Printf("append op %s: %v", sp.World.ID, err)
 	}
 	c.broadcastEditAck(sp, ack)
+	// Audit attribution: agent/bot ops (those carrying an idempotency key)
+	// emit an append-only activity row keyed to the acting account so the
+	// audit feed (GET /api/worlds/{id}/activity) attributes the build to the
+	// bot user id (docs/BOT-PROTOCOL.md).
+	if op.Idem != "" && op.Actor != "" {
+		c.hub.emitActivity(sp.World.ID, op.Actor, "bot", "edit", op.Op, sp.World.ID,
+			diffJSON(map[string]any{
+				"seq": op.Seq, "idem": op.Idem,
+				"x": op.X, "y": op.Y, "tileId": op.TileID, "cells": len(op.Cells),
+			}),
+			sanitizeIP(c.conn.RemoteAddr().String()))
+	}
 	// log the entity id (op.By), not the display name, on the hot edit path
-	log.Printf("edit[%s] by=%s: op=%s seq=%d cells=%d", sp.World.ID, op.By, op.Op, op.Seq, len(ack.Cells))
+	log.Printf("edit[%s] %s by=%s: op=%s seq=%d cells=%d", sp.World.ID, c.Entity.Name, op.By, op.Op, op.Seq, len(ack.Cells))
 }
 
 // canEditSpace authorizes a WS edit op. The client must be the world owner;
-// showcase/seed worlds are system content and read-only to clients; an
+// showcase/seed worlds are the shared co-building hub (plan v2) and are
+// editable by any authenticated session — humans and bots co-author them
+// (bots additionally audited + idempotent, docs/BOT-PROTOCOL.md); an
 // ownerless non-showcase world is not client-editable either. Denies on any
 // lookup error (authz gates fail closed).
 func (c *Client) canEditSpace(w *World) bool {
 	if w.IsShowcase {
-		return false
+		return c.Session != nil
 	}
 	meta, err := c.hub.store.worldMeta(w.ID)
 	if err != nil {
@@ -212,6 +245,7 @@ func parseEditOp(msg map[string]any) *hmf.Op {
 	op.UndoOf, _ = msgInt64(msg, "undoOf")
 	op.CX, _ = getInt(msg, "cx")
 	op.CY, _ = getInt(msg, "cy")
+	op.Idem = getString(msg, "idem")
 
 	if cells, ok := msg["cells"].([]any); ok && len(cells) > 0 {
 		op.Cells = make([]hmf.Cell, 0, len(cells))
@@ -347,6 +381,15 @@ func (c *Client) broadcastEditAck(sp *SpaceState, ack *EditAck) {
 		"undoOf":  op.UndoOf,
 		"ts":      chunkTimestamp(),
 		"applied": true,
+	}
+	if ack.Deduped {
+		// replay-safe skip: an op with the same idem key was already applied
+		d["deduped"] = true
+	}
+	if op.Idem != "" {
+		// echo the idempotency key so agents can correlate acks without
+		// relying on arrival order (docs/BOT-PROTOCOL.md)
+		d["idem"] = op.Idem
 	}
 	if len(ack.Chunks) > 0 {
 		d["chunks"] = ack.Chunks

@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "name": "Bricky",
+  "world": "garden",
+  "ops": [
+    {"op":"rect", "x":16, "y":20, "w":5, "h":2, "tile":"roof"},
+    {"op":"rect", "x":16, "y":22, "w":5, "h":3, "tile":"wall"},
+    {"op":"paint","x":17, "y":23, "tile":"flower"},
+    {"op":"paint","x":19, "y":23, "tile":"flower"},
+    {"op":"paint","x":18, "y":24, "tile":"door"},
+    {"op":"paint","x":26, "y":20, "tile":"flower"},
+    {"op":"paint","x":27, "y":20, "tile":"flower"},
+    {"op":"paint","x":29, "y":20, "tile":"flower"},
+    {"op":"paint","x":30, "y":20, "tile":"flower"},
+    {"op":"rect", "x":25, "y":21, "w":7, "h":2, "tile":"flower"},
+    {"op":"rect", "x":26, "y":23, "w":5, "h":1, "tile":"flower"},
+    {"op":"rect", "x":27, "y":24, "w":3, "h":1, "tile":"flower"},
+    {"op":"paint","x":28, "y":25, "tile":"flower"}
+  ]
+}

@@ -24,6 +24,14 @@ var startTime = time.Now()
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	// "hearth-server bot build ..." — headless bot client (S7, docs/BOT-PROTOCOL.md).
+	// Runs standalone: joins a live world over WS and emits an op sequence
+	// through the same edit envelope humans use. Server mode below.
+	if len(os.Args) > 1 && os.Args[1] == "bot" {
+		os.Exit(runBotCLI(os.Args[2:]))
+	}
+
 	addr := envOr("HEARTH_ADDR", "0.0.0.0:8090")
 	dbPath := envOr("HEARTH_DB", filepath.Join("data", "hearth.db"))
 
@@ -69,6 +77,8 @@ func main() {
 	mux.HandleFunc("/api/spaces/", hub.handleSpaceGet)
 	mux.HandleFunc("/api/worlds", hub.handleWorlds)
 	mux.HandleFunc("/api/worlds/", hub.handleWorldRoute)
+	mux.HandleFunc("/api/bots", hub.handleBots)
+	mux.HandleFunc("/api/bots/", hub.handleBotStatus)
 	mux.HandleFunc("/ws", hub.handleWS)
 	hub.RegisterAdminRoutes(mux) // S9: /api/admin/* + embedded /admin console
 	mux.HandleFunc("/", serveClient)
