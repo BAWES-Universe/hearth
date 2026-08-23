@@ -9,6 +9,8 @@ import { tintColor } from '../colors';
 import { astar, type Pt } from './astar';
 import { InterpBuffer } from './interp';
 import { generateTileTextures, genDefaultWorld, isPassableTile, parseWorld, TILE } from './tiles';
+import { renderAvatarSpec } from '../avatar/sprites';
+import { specAccent, specKey as specKeyOf, type AvatarInfo, type AvatarSpec } from '../avatar/spec';
 
 export interface LocalMove {
   x: number;
@@ -22,6 +24,7 @@ export interface RemoteState {
   x: number;
   y: number;
   dir?: string;
+  avatar?: AvatarInfo;
 }
 
 export interface RosterEntry {
@@ -30,6 +33,7 @@ export interface RosterEntry {
   x: number;
   y: number;
   dir?: string;
+  avatar?: AvatarInfo;
 }
 
 const SPEED = 4.5; // tiles / sec
@@ -43,6 +47,9 @@ interface Remote {
   sprite: Sprite;
   label: Text;
   buf: InterpBuffer;
+  dir: string;
+  /** spec cache key when this remote renders the layered composite. */
+  specKey: string;
 }
 
 interface LocalPlayer {
@@ -54,6 +61,17 @@ interface LocalPlayer {
   sprite: Sprite;
   ring: Graphics;
   label: Text;
+  specKey: string;
+}
+
+interface AvatarFrames {
+  down: Texture[];
+  up: Texture[];
+  right: Texture[];
+}
+
+function hexToNum(h: string): number {
+  return /^#[0-9a-fA-F]{6}$/.test(h) ? parseInt(h.slice(1), 16) : 0x8b5cf6;
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -139,6 +157,10 @@ export class WorldRenderer {
 
   private textures!: Record<number, Texture>;
   private dirTextures!: Record<string, Texture>;
+  /** Cached composite frames per spec (walk bob pairs per facing). */
+  private specFrames = new Map<string, AvatarFrames>();
+  private walkT = 0;
+  private walkPhase: 0 | 1 = 0;
 
   private tileSprites = new Map<string, Sprite>();
   private tiles = new Map<string, number>();
@@ -259,17 +281,25 @@ export class WorldRenderer {
 
   // ------------------------------------------------------------- players
 
-  setSelf(id: string, name: string): void {
+  setSelf(id: string, name: string, avatar?: AvatarInfo): void {
     this.selfId = id;
     if (this.local) {
       this.playerLayer.removeChild(this.local.sprite, this.local.ring, this.local.label);
     }
     this.clearRemotes();
-    const color = tintColor(name || 'you');
-    const sprite = new Sprite(this.dirTextures.down);
-    sprite.anchor.set(0.5, 0.92);
-    sprite.scale.set(AV_SCALE);
-    sprite.tint = color;
+    const spec = avatar?.spec;
+    const color = spec ? hexToNum(specAccent(spec)) : tintColor(name || 'you');
+    let sprite: Sprite;
+    let specKey = '';
+    if (spec) {
+      specKey = specKeyOf(spec);
+      sprite = this.makeCompositeSprite(spec, 'down');
+    } else {
+      sprite = new Sprite(this.dirTextures.down);
+      sprite.anchor.set(0.5, 0.92);
+      sprite.scale.set(AV_SCALE);
+      sprite.tint = color;
+    }
     const ring = new Graphics().circle(0, 0, 22).stroke({ width: 3, color: 0xf59e0b, alpha: 0.9 });
     const label = this.makeLabel(name || 'you', color);
     this.local = {
@@ -281,6 +311,7 @@ export class WorldRenderer {
       sprite,
       ring,
       label,
+      specKey,
     };
     this.playerLayer.addChild(sprite, ring, label);
   }
@@ -290,7 +321,7 @@ export class WorldRenderer {
     const now = performance.now();
     for (const r of roster) {
       if (!r || r.id === this.selfId) continue;
-      const rem = this.ensureRemote(r.id, r.name);
+      const rem = this.ensureRemote(r.id, r.name, r.avatar);
       rem.buf.push(now, r.x, r.y);
       rem.label.text = r.name || r.id.slice(0, 6);
     }
@@ -300,9 +331,12 @@ export class WorldRenderer {
     const now = performance.now();
     for (const s of states) {
       if (!s || s.id === this.selfId) continue;
-      const rem = this.ensureRemote(s.id);
+      const rem = this.ensureRemote(s.id, undefined, s.avatar);
       rem.buf.push(now, s.x, s.y);
-      if (s.dir) rem.sprite.scale.x = s.dir === 'left' ? -AV_SCALE : AV_SCALE;
+      if (s.dir) {
+        rem.dir = s.dir;
+        rem.sprite.scale.x = s.dir === 'left' ? -AV_SCALE : AV_SCALE;
+      }
     }
   }
 
@@ -311,20 +345,69 @@ export class WorldRenderer {
     this.remotes.clear();
   }
 
-  private ensureRemote(id: string, name = ''): Remote {
+  private ensureRemote(id: string, name = '', avatar?: AvatarInfo): Remote {
     let rem = this.remotes.get(id);
     if (!rem) {
-      const sprite = new Sprite(this.dirTextures.down);
-      sprite.anchor.set(0.5, 0.92);
-      sprite.scale.set(AV_SCALE);
-      const color = tintColor(name || id);
-      sprite.tint = color;
+      const spec = avatar?.spec;
+      let sprite: Sprite;
+      let color: number;
+      let specKey = '';
+      if (spec) {
+        specKey = specKeyOf(spec);
+        sprite = this.makeCompositeSprite(spec, 'down');
+        color = hexToNum(specAccent(spec));
+      } else {
+        sprite = new Sprite(this.dirTextures.down);
+        sprite.anchor.set(0.5, 0.92);
+        sprite.scale.set(AV_SCALE);
+        color = tintColor(name || id);
+        sprite.tint = color;
+      }
       const label = this.makeLabel(name || id.slice(0, 6), color);
       this.playerLayer.addChild(sprite, label);
-      rem = { sprite, label, buf: new InterpBuffer(100) };
+      rem = { sprite, label, buf: new InterpBuffer(100), dir: 'down', specKey };
       this.remotes.set(id, rem);
+    } else if (avatar?.spec && rem.specKey !== specKeyOf(avatar.spec)) {
+      // layered spec may arrive on a later state tick — upgrade in place
+      rem.specKey = specKeyOf(avatar.spec);
+      rem.sprite.texture = this.avatarFrames(avatar.spec).down[0];
+      rem.sprite.tint = 0xffffff;
+      rem.label.style.fill = hexToNum(specAccent(avatar.spec));
+    } else if (avatar && !rem.specKey) {
+      // legacy color/icon arrives late — apply tint (keeps old clients working)
+      if (avatar.color && /^#[0-9a-fA-F]{6}$/.test(avatar.color)) {
+        const c = parseInt(avatar.color.slice(1), 16);
+        rem.sprite.tint = c;
+        rem.label.style.fill = c;
+      }
     }
     return rem;
+  }
+
+  /** Builds a sprite using the layered composite frames (colors are baked in). */
+  private makeCompositeSprite(spec: AvatarSpec, dir: string): Sprite {
+    const sprite = new Sprite(this.avatarFrames(spec)[this.dirKey(dir)][0]);
+    sprite.anchor.set(0.5, 0.92);
+    sprite.scale.set(AV_SCALE);
+    return sprite;
+  }
+
+  private avatarFrames(spec: AvatarSpec): AvatarFrames {
+    const key = specKeyOf(spec);
+    let f = this.specFrames.get(key);
+    if (!f) {
+      const mk = (dir: 'down' | 'up' | 'right') =>
+        [0, 1].map((ph) => Texture.from(renderAvatarSpec(spec, { dir, phase: ph as 0 | 1 })));
+      f = { down: mk('down'), up: mk('up'), right: mk('right') };
+      this.specFrames.set(key, f);
+    }
+    return f;
+  }
+
+  private dirKey(dir: string): 'down' | 'up' | 'right' {
+    if (dir === 'up') return 'up';
+    if (dir === 'left' || dir === 'right') return 'right';
+    return 'down';
   }
 
   private makeLabel(text: string, color: number): Text {
@@ -442,12 +525,18 @@ export class WorldRenderer {
     const now = performance.now();
     this.stepPath(dt);
     this.updateCamera(dt);
+    // walk bob: 2-frame cycle at 4Hz while the local player is moving
+    const moving = !!this.local && (!!this.path || !!this.local.dirty);
+    if (moving) this.walkT += dt;
+    else this.walkT = 0;
+    this.walkPhase = (Math.floor(this.walkT / 0.25) % 2) as 0 | 1;
     this.syncLocal();
     for (const r of this.remotes.values()) {
       const s = r.buf.get(now);
       if (s) {
         r.sprite.position.set(s.x * TILE, s.y * TILE);
         r.label.position.set(s.x * TILE, s.y * TILE - 8);
+        this.applyCompositePhase(r, this.walkPhase);
       }
       r.buf.prune(now);
     }
@@ -511,8 +600,25 @@ export class WorldRenderer {
     l.sprite.position.set(l.x * TILE, l.y * TILE);
     l.ring.position.set(l.x * TILE, l.y * TILE);
     l.label.position.set(l.x * TILE, l.y * TILE - 8);
+    if (l.specKey) {
+      const frames = this.specFrames.get(l.specKey);
+      if (frames) {
+        const tex = frames[this.dirKey(l.dir)][this.walkPhase];
+        if (l.sprite.texture !== tex) l.sprite.texture = tex;
+      }
+      return;
+    }
     const tex = this.dirTextures[l.dir] ?? this.dirTextures.down;
     if (l.sprite.texture !== tex) l.sprite.texture = tex;
+  }
+
+  /** Bobs a composite remote sprite between its two walk frames. */
+  private applyCompositePhase(r: Remote, phase: 0 | 1): void {
+    if (!r.specKey) return;
+    const frames = this.specFrames.get(r.specKey);
+    if (!frames) return;
+    const tex = frames[this.dirKey(r.dir)][phase];
+    if (r.sprite.texture !== tex) r.sprite.texture = tex;
   }
 
   private maybeSendMove(now: number): void {

@@ -30,12 +30,15 @@ export function env(t: string, d: unknown): Envelope {
   return { v: 1, t, id: uuid(), ts: Date.now(), d };
 }
 
+import type { AvatarInfo } from '../avatar/spec';
+
 export interface RosterEntry {
   id: string;
   name: string;
   x: number;
   y: number;
   dir?: string;
+  avatar?: AvatarInfo;
 }
 
 export interface Welcome {
@@ -44,6 +47,7 @@ export interface Welcome {
   spaceId?: string;
   world?: unknown;
   roster?: RosterEntry[];
+  avatar?: AvatarInfo;
 }
 
 export interface StateEntry {
@@ -51,6 +55,7 @@ export interface StateEntry {
   x: number;
   y: number;
   dir?: string;
+  avatar?: AvatarInfo;
 }
 
 export interface ChatMsg {
