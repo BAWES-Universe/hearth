@@ -208,7 +208,20 @@ func (c *Client) handleMessage(raw []byte) {
 		c.sendError("bad_json", "invalid JSON")
 		return
 	}
-	t, _ := msg["type"].(string)
+	// PROTOCOL.md envelope: {"v":1,"t":"<type>","id":..,"ts":..,"d":{...}}.
+	// Accept both "t" (frozen contract) and legacy "type" (compat), and merge
+	// the "d" payload into the top level so handlers read fields uniformly.
+	t, _ := msg["t"].(string)
+	if t == "" {
+		t, _ = msg["type"].(string)
+	}
+	if d, ok := msg["d"].(map[string]any); ok {
+		for k, v := range d {
+			if _, exists := msg[k]; !exists {
+				msg[k] = v
+			}
+		}
+	}
 	switch t {
 	case "join":
 		c.handleJoin(msg)

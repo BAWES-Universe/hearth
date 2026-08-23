@@ -15,22 +15,22 @@ import (
 // with r.mu held; anything that may call back into the room (topk.evaluate ->
 // audioSelection) must NOT be called while holding r.mu.
 type Room struct {
-	id         string
-	cfg        Config
-	onEvent    emitFn
-	peerGone   func(peerID string)
-	audioSlots int
-	videoSlots int
+	id          string
+	cfg         Config
+	onEvent     emitFn
+	peerGone    func(peerID string)
+	audioSlots  int
+	videoSlots  int
 	screenSlots int
 
-	mu      sync.Mutex
-	peers   map[string]*Peer
-	tracks  map[string]*PublishedTrack // key: pubID|kind|rung (single table per room)
+	mu     sync.Mutex
+	peers  map[string]*Peer
+	tracks map[string]*PublishedTrack // key: pubID|kind|rung (single table per room)
 
-	audioOrder []string               // pubIDs in join order (Top-K priority)
-	audioCount map[string]int         // pubID -> live audio streams
-	screenOrder []string              // pubIDs publishing screen, most recent first
-	screenSubs map[string]map[string]bool // subPeerID -> set of screen pubIDs subscribed
+	audioOrder  []string                   // pubIDs in join order (Top-K priority)
+	audioCount  map[string]int             // pubID -> live audio streams
+	screenOrder []string                   // pubIDs publishing screen, most recent first
+	screenSubs  map[string]map[string]bool // subPeerID -> set of screen pubIDs subscribed
 
 	topk *TopK
 }

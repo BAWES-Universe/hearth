@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "preview": "vite preview",
     "icons": "python3 scripts/gen-icons.py",
     "mock": "node scripts/mock-server.mjs"
@@ -19,6 +21,7 @@
     "@preact/preset-vite": "^2.10.1",
     "typescript": "^5.7.3",
     "vite": "^6.0.7",
-    "vite-plugin-pwa": "^0.21.1"
+    "vite-plugin-pwa": "^0.21.1",
+    "vitest": "^4.1.11"
   }
 }

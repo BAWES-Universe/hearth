@@ -83,9 +83,9 @@ const (
 // Rungs for camera simulcast. DefaultRung is what subscribers get unless the
 // publisher only offers another rung (then the nearest lower rung is used).
 const (
-	RungLow    = "low"
-	RungMid    = "mid"
-	RungHigh   = "high"
+	RungLow     = "low"
+	RungMid     = "mid"
+	RungHigh    = "high"
 	DefaultRung = RungLow
 )
 

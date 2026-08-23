@@ -12,11 +12,11 @@ import (
 // per-track readers; the server relays signaling between Media and peers over
 // its WebSocket using Events() + HandleSignal.
 type Media struct {
-	cfg     Config
-	events  chan SignalMsg
-	mu      sync.Mutex
-	rooms   map[string]*Room
-	peers   map[string]*Peer // peerID -> peer (all rooms)
+	cfg    Config
+	events chan SignalMsg
+	mu     sync.Mutex
+	rooms  map[string]*Room
+	peers  map[string]*Peer // peerID -> peer (all rooms)
 }
 
 // New creates the SFU. Config zero values fall back to protocol defaults

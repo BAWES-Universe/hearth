@@ -13,10 +13,10 @@ import (
 // published track's reader writes into slot.local. No SDP renegotiation ever
 // happens on the subscriber connection.
 type Slot struct {
-	idx    int
-	kind   string // KindAudio | KindVideo | KindScreen
-	tr     *webrtc.RTPTransceiver
-	local  *webrtc.TrackLocalStaticRTP
+	idx      int
+	kind     string // KindAudio | KindVideo | KindScreen
+	tr       *webrtc.RTPTransceiver
+	local    *webrtc.TrackLocalStaticRTP
 	boundKey string // pubID|kind|rung of the source currently feeding this slot ("" = idle)
 	boundPub string
 }
@@ -28,9 +28,9 @@ type Slot struct {
 //	subscriber: SFU sends media down; SFU offers 12+6+2 sendonly m-lines once;
 //	           afterwards slots are re-pointed in-process, never renegotiated.
 type Peer struct {
-	id      string
-	room    *Room
-	cfg     Config
+	id       string
+	room     *Room
+	cfg      Config
 	joinedAt time.Time
 
 	pub *webrtc.PeerConnection // client -> SFU (answerer)

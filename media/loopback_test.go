@@ -26,12 +26,12 @@ type testClient struct {
 	pub *webrtc.PeerConnection // client-side publisher PC (offers media up)
 	sub *webrtc.PeerConnection // client-side subscriber PC (answers SFU offer)
 
-	receivedAudio   atomic.Int64 // packets on h-slot-audio-* m-lines
-	receivedVideo   atomic.Int64 // packets on h-slot-camera-* m-lines
-	receivedScreen  atomic.Int64 // packets on h-slot-screen-* m-lines
-	subOffersSeen   atomic.Int64 // subscriber offers relayed to us (must stay 1)
-	subMlines       atomic.Int64 // m= lines in the first subscriber offer
-	subSDPSeen      atomic.Bool
+	receivedAudio  atomic.Int64 // packets on h-slot-audio-* m-lines
+	receivedVideo  atomic.Int64 // packets on h-slot-camera-* m-lines
+	receivedScreen atomic.Int64 // packets on h-slot-screen-* m-lines
+	subOffersSeen  atomic.Int64 // subscriber offers relayed to us (must stay 1)
+	subMlines      atomic.Int64 // m= lines in the first subscriber offer
+	subSDPSeen     atomic.Bool
 }
 
 func newTestClient(t *testing.T, m *Media, id string) *testClient {
@@ -54,18 +54,20 @@ func newTestClient(t *testing.T, m *Media, id string) *testClient {
 		if cand == nil {
 			return
 		}
-		_, _ = m.HandleSignal(id, SignalMsg{Type: SigICE, PC: PCPublisher, PeerID: id, Candidate: cand.ToJSON()})
+		c := cand.ToJSON()
+		_, _ = m.HandleSignal(id, SignalMsg{Type: SigICE, PC: PCPublisher, PeerID: id, Candidate: &c})
 	})
 	c.sub.OnICECandidate(func(cand *webrtc.ICECandidate) {
 		if cand == nil {
 			return
 		}
-		_, _ = m.HandleSignal(id, SignalMsg{Type: SigICE, PC: PCSubscriber, PeerID: id, Candidate: cand.ToJSON()})
+		c := cand.ToJSON()
+		_, _ = m.HandleSignal(id, SignalMsg{Type: SigICE, PC: PCSubscriber, PeerID: id, Candidate: &c})
 	})
 
 	// Incoming media from the SFU -> counters, classified by the msid the SFU
 	// pre-negotiated (h-slot-audio-*, h-slot-camera-*, h-slot-screen-*).
-	c.sub.OnTrack(func(tr *webrtc.TrackRemote, _ *webrtc.RTPReceiver, _ *webrtc.RTPTransceiver) {
+	c.sub.OnTrack(func(tr *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
 		stream := tr.StreamID()
 		c.t.Logf("%s: sub onTrack stream=%q id=%q kind=%s", id, stream, tr.ID(), tr.Kind())
 		go func() {
@@ -160,6 +162,7 @@ func (c *testClient) addTracksAndOffer(tracks ...*webrtc.TrackLocalStaticRTP) {
 	if err != nil {
 		c.t.Fatalf("%s: CreateOffer(pub): %v", c.id, err)
 	}
+	c.t.Logf("%s: publisher offer: %d m-lines", c.id, countMlines(offer.SDP))
 	if err := c.pub.SetLocalDescription(offer); err != nil {
 		c.t.Fatalf("%s: SetLocalDescription(pub offer): %v", c.id, err)
 	}
@@ -169,6 +172,12 @@ func (c *testClient) addTracksAndOffer(tracks ...*webrtc.TrackLocalStaticRTP) {
 	}
 	for _, o := range out {
 		if o.Type == SigAnswer && o.SDP != nil {
+			c.t.Logf("%s: SFU answer: %d m-lines", c.id, countMlines(o.SDP.SDP))
+			for _, line := range strings.Split(o.SDP.SDP, "\n") {
+				if strings.HasPrefix(line, "m=") {
+					c.t.Logf("    %s", strings.TrimSpace(line))
+				}
+			}
 			if err := c.pub.SetRemoteDescription(*o.SDP); err != nil {
 				c.t.Fatalf("%s: SetRemoteDescription(pub answer): %v", c.id, err)
 			}

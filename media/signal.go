@@ -24,13 +24,13 @@ const (
 type SignalType string
 
 const (
-	SigOffer   SignalType = "offer"
-	SigAnswer  SignalType = "answer"
-	SigICE     SignalType = "ice"
-	SigJoined  SignalType = "joined"
-	SigLeft    SignalType = "left"
-	SigSlots   SignalType = "slots"
-	SigTopK    SignalType = "topk"
+	SigOffer  SignalType = "offer"
+	SigAnswer SignalType = "answer"
+	SigICE    SignalType = "ice"
+	SigJoined SignalType = "joined"
+	SigLeft   SignalType = "left"
+	SigSlots  SignalType = "slots"
+	SigTopK   SignalType = "topk"
 )
 
 // SignalMsg is one unit of WebRTC signaling. The server serializes these into
@@ -38,9 +38,9 @@ const (
 // SFU and the peer over the WebSocket; incoming client signals are parsed back
 // into SignalMsg and passed to HandleSignal.
 type SignalMsg struct {
-	Type   SignalType               `json:"type"`
-	PC     PCKind                   `json:"pc"`
-	PeerID string                   `json:"peerId"`
+	Type   SignalType                 `json:"type"`
+	PC     PCKind                     `json:"pc"`
+	PeerID string                     `json:"peerId"`
 	SDP    *webrtc.SessionDescription `json:"sdp,omitempty"`
 	// Candidate is one trickle ICE candidate (Type == "ice").
 	Candidate *webrtc.ICECandidateInit `json:"candidate,omitempty"`
