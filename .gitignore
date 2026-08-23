@@ -1,0 +1,15 @@
+# deps
+node_modules/
+client/node_modules/
+client/dist/
+*.db
+*.db-wal
+*.db-shm
+data/
+# build artifacts
+*.exe
+hearth
+# secrets — never commit
+*.pat
+.env
+or_key.txt
