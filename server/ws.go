@@ -277,7 +277,9 @@ func (c *Client) handleJoin(msg map[string]any) {
 		spaceID = getString(msg, "space") // client sends "space"
 	}
 	if spaceID == "" {
-		spaceID = "hearth"
+		// Universal spawn: '/' (no spaceId) routes to town-square — the one
+		// world every visitor enters. No map picker, no room-of-the-day.
+		spaceID = "town-square"
 	}
 
 	c.mu.Lock()
@@ -353,6 +355,9 @@ func (c *Client) handleJoin(msg map[string]any) {
 		"spaceId": spaceID, "name": e.Name, "x": e.X, "y": e.Y, "dir": e.Dir,
 		"world": sp.World.GeoJSON(),
 	})
+	// gravity/audit: presence event (Reach = unique visitors)
+	c.hub.emitActivity(spaceID, sess.UserID, "member", "presence", "join", spaceID,
+		diffJSON(map[string]any{"name": e.Name, "x": e.X, "y": e.Y}), sanitizeIP(c.conn.RemoteAddr().String()))
 	log.Printf("join: %s (%s) -> %s @ %d,%d", e.Name, sess.ID[:8], spaceID, e.X, e.Y)
 }
 
@@ -404,6 +409,16 @@ func (c *Client) handlePortal(msg map[string]any) {
 		c.sendError("portal_broken", "portal target space missing: "+p.TargetSpace)
 		return
 	}
+	// Portal routing by world id: only published worlds (or town-square hub)
+	// are reachable destinations. Draft owners may still enter their own
+	// unpublished world to test it. Emits a nav event for gravity/audit.
+	if meta, err := c.hub.store.worldMeta(p.TargetSpace); err == nil && !meta.IsPublished {
+		ownerOK := c.Session != nil && meta.OwnerID == c.Session.UserID
+		if !ownerOK {
+			c.sendError("portal_broken", "portal target world not published: "+p.TargetSpace)
+			return
+		}
+	}
 	oldSpace := c.spaceID
 	sp.RemoveEntity(c.Entity)
 	target.AddEntity(c.Entity)
@@ -414,6 +429,13 @@ func (c *Client) handlePortal(msg map[string]any) {
 		"portalId": p.ID,
 		"spaceId":  p.TargetSpace, "x": p.TargetX, "y": p.TargetY,
 	})
+	actor := ""
+	if c.Session != nil {
+		actor = c.Session.UserID
+	}
+	c.hub.emitActivity(p.TargetSpace, actor, "member", "nav", "portal", p.TargetSpace,
+		diffJSON(map[string]any{"portalId": p.ID, "from": oldSpace, "x": p.TargetX, "y": p.TargetY}),
+		sanitizeIP(c.conn.RemoteAddr().String()))
 	log.Printf("portal: %s used %s %s -> %s (%d,%d)", c.Entity.Name, oldSpace, p.ID, p.TargetSpace, p.TargetX, p.TargetY)
 }
 

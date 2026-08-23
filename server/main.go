@@ -41,8 +41,15 @@ func main() {
 		log.Fatalf("seed defaults: %v", err)
 	}
 
+	// S1 Core: activity/audit log + gravity tables + world flags (idempotent).
+	// Runs after SeedDefaults so seed worlds exist before flags are applied.
+	if err := store.MigrateS1(); err != nil {
+		log.Fatalf("migrate s1: %v", err)
+	}
+
 	hub := NewHub(store)
 	go hub.Run()
+	go hub.gravityCron() // nightly gravity recompute (design: nightly cron)
 	defer hub.Close()
 
 	mux := http.NewServeMux()
@@ -51,6 +58,8 @@ func main() {
 	mux.HandleFunc("/api/me", hub.handleMe)
 	mux.HandleFunc("/api/spaces", hub.handleSpaces)
 	mux.HandleFunc("/api/spaces/", hub.handleSpaceGet)
+	mux.HandleFunc("/api/worlds", hub.handleWorlds)
+	mux.HandleFunc("/api/worlds/", hub.handleWorldRoute)
 	mux.HandleFunc("/ws", hub.handleWS)
 	mux.HandleFunc("/", serveClient)
 
