@@ -60,11 +60,20 @@ var nameByID = func() map[int]string {
 }()
 
 // TileID returns the numeric palette id for a tile name (0 for unknown).
+// Lenient by design for callers that treat unknown names as floor.
 func TileID(name string) int {
 	if id, ok := Palette[name]; ok {
 		return id
 	}
 	return FloorTile
+}
+
+// TileIDOK is the strict lookup: it reports whether name is a real palette
+// entry. Callers that must NOT silently turn an unknown name into floor
+// (e.g. the editor op parser, the fixture builder) use this and reject.
+func TileIDOK(name string) (int, bool) {
+	id, ok := Palette[name]
+	return id, ok
 }
 
 // TileName returns the palette name for a numeric id ("" for unknown).
@@ -162,7 +171,19 @@ type Grid map[string]int
 func Key(x, y int) string { return fmt.Sprintf("%d,%d", x, y) }
 
 // ChunkOf returns the chunk coordinates containing tile (x,y).
-func ChunkOf(x, y int) (cx, cy int) { return x / ChunkSize, y / ChunkSize }
+// Uses floor division: Go's / truncates toward zero, so x = -1 would map to
+// chunk 0 instead of -1. All current callers reject negative coordinates
+// before calling, but this package is documented as pure and shared.
+func ChunkOf(x, y int) (cx, cy int) { return floorDiv(x, ChunkSize), floorDiv(y, ChunkSize) }
+
+// floorDiv divides rounding toward negative infinity (Go's / truncates).
+func floorDiv(a, b int) int {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
+}
 
 // ChunkOrigin returns the world-space origin tile of a chunk.
 func ChunkOrigin(cx, cy int) (x0, y0 int) { return cx * ChunkSize, cy * ChunkSize }

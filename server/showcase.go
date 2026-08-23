@@ -61,6 +61,12 @@ func loadShowcaseWorlds() ([]*World, error) {
 		if err := json.Unmarshal(b, &fx); err != nil {
 			return nil, fmt.Errorf("fixture %s: %w", e.Name(), err)
 		}
+		// the running server must not replay a fixture with a different HMF
+		// version header using v1 semantics (the test used to be the only
+		// gate — the loader is the real one).
+		if fx.HMF != hmfVersion {
+			return nil, fmt.Errorf("fixture %s: hmf = %q, want %q", e.Name(), fx.HMF, hmfVersion)
+		}
 		w, err := buildWorldFromOps(&fx)
 		if err != nil {
 			return nil, fmt.Errorf("fixture %s: %w", e.Name(), err)

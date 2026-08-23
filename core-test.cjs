@@ -8,13 +8,17 @@
 //   3. portal round-trip: town-square -> hearth -> garden (by world id)
 //   4. audit row on publish (append-only activity feed shows publish event)
 //
-// Uses global WebSocket (node >= 21) with fallback to the Debian ws package.
+// Uses the `ws` package API (.on / Buffer messages). The global WHATWG
+// WebSocket (node >= 21) exposes addEventListener, not `.on`, so it is never
+// used here — prefer normal module lookup, then the Debian package path.
 const { randomUUID } = require('node:crypto');
 
 const BASE = process.env.HEARTH_URL || 'http://127.0.0.1:8090';
 const WS_URL = BASE.replace(/^http/, 'ws') + '/ws';
 const WebSocketImpl = (() => {
-  try { return WebSocket; } catch { return require('/usr/share/nodejs/ws/index.js'); }
+  try { return require('ws'); } catch {}
+  try { return require('/usr/share/nodejs/ws/index.js'); } catch {}
+  throw new Error('no ws package found; install ws (the global WHATWG WebSocket is not compatible with the .on() API used below)');
 })();
 
 let pass = 0, fail = 0;
@@ -24,6 +28,19 @@ const check = (name, ok, extra = '') => {
 };
 const env = (t, d) => JSON.stringify({ v: 1, t, id: randomUUID(), ts: Date.now(), d });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// waitUntil polls fn() until it returns a truthy value or the deadline hits.
+// Fixed sleeps raced the server's publish/gravity/join accounting on loaded
+// machines — polling makes the test assert the settled state, not a guess.
+async function waitUntil(desc, fn, timeout = 8000, step = 80) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error('timeout waiting for ' + desc);
+    await sleep(step);
+  }
+}
 
 async function api(method, path, body, cookie) {
   const headers = {};
@@ -103,9 +120,13 @@ async function guestAuth(deviceKey, name) {
   check('POST publish draft->published', pub.status === 200 && pub.j?.is_published === true,
     `status=${pub.status} body=${pub.text?.slice(0, 120)}`);
 
-  await sleep(80);
-  const dir1 = await api('GET', '/api/worlds', null, null);
-  const card = (dir1.j?.worlds || []).find((w) => w.id === worldId);
+  // poll until the published card settles in the directory (publish is async
+  // w.r.t. gravity refresh — the card must be there BEFORE we read it)
+  const dir1 = await waitUntil('published world in directory', async () => {
+    const d = await api('GET', '/api/worlds', null, null);
+    return (d.j?.worlds || []).find((w) => w.id === worldId);
+  });
+  const card = dir1;
   check('published world in /api/worlds with owner+headcount+gravity',
     !!card && card.is_published === true && card.owner?.name === 'S1Core' &&
     typeof card.headcount === 'number' && card.gravity && typeof card.gravity.gravity === 'number',
@@ -114,8 +135,11 @@ async function guestAuth(deviceKey, name) {
   // ============ CHECK 2: gravity ordering determinism ============
   const orderIds = (d) => (d.j?.worlds || []).map((w) => w.id);
   const first = orderIds(dir1);
-  await sleep(60);
-  const dir2 = await api('GET', '/api/worlds', null, null);
+  const dir2 = await waitUntil('directory stable across reads', async () => {
+    const d = await api('GET', '/api/worlds', null, null);
+    const ids = orderIds(d);
+    return ids.length === first.length && ids.every((id, i) => id === first[i]) ? d : null;
+  });
   const second = orderIds(dir2);
   check('gravity ordering deterministic across reads',
     first.length === second.length && first.every((id, i) => id === second[i]),
@@ -124,14 +148,20 @@ async function guestAuth(deviceKey, name) {
   // create a second world WITHOUT activity — the active one must rank above
   const quiet = await api('POST', '/api/worlds', { name: 'Quiet ' + (Date.now() % 100000) }, jar);
   const quietId = quiet.j?.id;
+  check('quiet world created', !!quietId, `status=${quiet.status} body=${quiet.text?.slice(0, 120)}`);
+  if (!quietId) { console.log(`\nRESULT: ${pass} pass, ${fail} fail`); process.exit(1); }
   await api('POST', `/api/worlds/${quietId}/publish`, null, jar);
   // visit the first world so its gravity rises (join = reach + momentum)
   const wsc = await openWS({ name: 'GravTest', guest: true, deviceKey: dk + '-g', space: worldId });
   await wsc.waitFor('welcome');
   wsc.ws.close();
-  await sleep(120);
-  const dir3 = await api('GET', '/api/worlds', null, null);
-  const worlds3 = dir3.j?.worlds || [];
+  const worlds3 = await waitUntil('active world ranks above quiet world', async () => {
+    const d = await api('GET', '/api/worlds', null, null);
+    const ws3 = d.j?.worlds || [];
+    const iA = ws3.findIndex((w) => w.id === worldId);
+    const iQ = ws3.findIndex((w) => w.id === quietId);
+    return iA >= 0 && iQ >= 0 && iA < iQ ? ws3 : null;
+  });
   const idxActive = worlds3.findIndex((w) => w.id === worldId);
   const idxQuiet = worlds3.findIndex((w) => w.id === quietId);
   check('active world ranks above quiet world', idxActive >= 0 && idxQuiet >= 0 && idxActive < idxQuiet,

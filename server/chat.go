@@ -145,15 +145,57 @@ func (c *Client) handleEdit(msg map[string]any) {
 		return
 	}
 
+	// Ownership gate: only the world owner may mutate a world, and the
+	// showcase/seed worlds are read-only to clients. Without this, any
+	// authenticated client could paint or publish any world (including
+	// town-square and the showcase worlds).
+	if !c.canEditSpace(sp.World) {
+		c.sendError("edit_forbidden", "only the owner of this world can edit it")
+		return
+	}
+
+	// Allocate the op seq BEFORE applying: an applied op must never carry
+	// seq=0 or be missing from the op_log (undo/replay integrity). If
+	// sequencing fails, the edit is rejected before anything mutates.
+	seq, err := c.hub.store.NextOpSeq(sp.World.ID)
+	if err != nil {
+		c.sendError("edit_rejected", "op sequencing failed")
+		return
+	}
+	op.Seq = seq
+
 	ack := c.hub.applyEditOp(sp, c, op)
 	if ack.Err != "" {
 		c.sendError("edit_rejected", ack.Err)
 		return
 	}
-	// Server-assigned seq + append-only op_log (build history / undo trail).
-	c.hub.recordOp(sp.World.ID, op)
+	// Append-only op_log (build history / undo trail). A failed append is
+	// logged — the op is already applied with a valid seq, so the ack must
+	// not claim failure.
+	if err := c.hub.store.AppendOp(sp.World.ID, seq, op); err != nil {
+		log.Printf("append op %s: %v", sp.World.ID, err)
+	}
 	c.broadcastEditAck(sp, ack)
-	log.Printf("edit[%s] %s: op=%s seq=%d cells=%d", sp.World.ID, c.Entity.Name, op.Op, op.Seq, len(ack.Cells))
+	// log the entity id (op.By), not the display name, on the hot edit path
+	log.Printf("edit[%s] by=%s: op=%s seq=%d cells=%d", sp.World.ID, op.By, op.Op, op.Seq, len(ack.Cells))
+}
+
+// canEditSpace authorizes a WS edit op. The client must be the world owner;
+// showcase/seed worlds are system content and read-only to clients; an
+// ownerless non-showcase world is not client-editable either. Denies on any
+// lookup error (authz gates fail closed).
+func (c *Client) canEditSpace(w *World) bool {
+	if w.IsShowcase {
+		return false
+	}
+	meta, err := c.hub.store.worldMeta(w.ID)
+	if err != nil {
+		return false
+	}
+	if meta.OwnerID == "" {
+		return false
+	}
+	return c.Session != nil && meta.OwnerID == c.Session.UserID
 }
 
 // parseEditOp builds an hmf.Op from a client edit message. Accepts the frozen
@@ -189,27 +231,37 @@ func parseEditOp(msg map[string]any) *hmf.Op {
 
 	switch op.Op {
 	case "paint", "erase", "place":
-		if len(op.Cells) == 0 && (op.X == 0 && op.Y == 0 && op.Op != "erase") {
-			// (0,0) is a valid tile; only reject when neither cells nor a
-			// coordinate pair was provided at all.
-			if _, hasX := msg["x"]; !hasX {
+		// (0,0) is a valid tile: require the KEYS, not non-zero values.
+		// The old guard exempted erase, so a bare {"op":"erase"} erased
+		// tile (0,0) instead of being rejected.
+		if len(op.Cells) == 0 {
+			_, hasX := msg["x"]
+			_, hasY := msg["y"]
+			if !hasX || !hasY {
 				return nil
 			}
 		}
 		if tid, ok := getInt(msg, "tileId"); ok {
 			op.TileID = tid
 		} else if tile, ok := msg["tile"].(map[string]any); ok {
-			op.TileID = TileID(getString(tile, "t"))
+			name := getString(tile, "t")
+			// unknown names must be REJECTED, not mapped to floor: mapping
+			// them to 0 turned a paint with a typo into an erase.
+			id, ok := hmf.TileIDOK(name)
+			if !ok {
+				return nil
+			}
+			op.TileID = id
 		}
 	case "portal":
 		if p, ok := msg["portal"].(map[string]any); ok {
 			op.Portal = &hmf.Portal{
 				ID:          getString(p, "id"),
-				X:           intOf(p, "x"),
-				Y:           intOf(p, "y"),
+				X:           mustInt(p, "x"),
+				Y:           mustInt(p, "y"),
 				TargetSpace: getString(p, "targetSpace"),
-				TargetX:     intOf(p, "targetX"),
-				TargetY:     intOf(p, "targetY"),
+				TargetX:     mustInt(p, "targetX"),
+				TargetY:     mustInt(p, "targetY"),
 			}
 		} else {
 			op.PortalID = getString(msg, "portalId")
@@ -217,20 +269,26 @@ func parseEditOp(msg map[string]any) *hmf.Op {
 		if op.Portal == nil && op.PortalID == "" {
 			return nil
 		}
+		if op.Portal != nil && !intFieldsPresent(payload(msg, "portal"), "x", "y", "targetX", "targetY") {
+			return nil
+		}
 	case "zone":
 		if z, ok := msg["zone"].(map[string]any); ok {
 			op.Zone = &hmf.Zone{
 				ID:   getString(z, "id"),
 				Name: getString(z, "name"),
-				X:    intOf(z, "x"),
-				Y:    intOf(z, "y"),
-				W:    intOf(z, "w"),
-				H:    intOf(z, "h"),
+				X:    mustInt(z, "x"),
+				Y:    mustInt(z, "y"),
+				W:    mustInt(z, "w"),
+				H:    mustInt(z, "h"),
 			}
 		} else {
 			op.ZoneID = getString(msg, "zoneId")
 		}
 		if op.Zone == nil && op.ZoneID == "" {
+			return nil
+		}
+		if op.Zone != nil && !intFieldsPresent(payload(msg, "zone"), "x", "y", "w", "h") {
 			return nil
 		}
 	case "publish":
@@ -243,11 +301,28 @@ func parseEditOp(msg map[string]any) *hmf.Op {
 	return op
 }
 
-func intOf(m map[string]any, k string) int {
-	if f, ok := m[k].(float64); ok {
-		return int(f)
+func payload(msg map[string]any, key string) map[string]any {
+	m, _ := msg[key].(map[string]any)
+	return m
+}
+
+// intFieldsPresent reports whether every named field exists as a JSON number
+// in m. The old intOf() silently returned 0 for missing/wrong-typed fields,
+// which placed portals/zones at (0,0) — reject instead.
+func intFieldsPresent(m map[string]any, keys ...string) bool {
+	for _, k := range keys {
+		if _, ok := getInt(m, k); !ok {
+			return false
+		}
 	}
-	return 0
+	return true
+}
+
+// mustInt reads a JSON-number field, defaulting to 0 when absent — callers
+// must have validated presence via intFieldsPresent first.
+func mustInt(m map[string]any, k string) int {
+	v, _ := getInt(m, k)
+	return v
 }
 
 func msgInt64(m map[string]any, k string) (int64, bool) {

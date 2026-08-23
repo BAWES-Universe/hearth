@@ -187,6 +187,10 @@ func NewSpaceState(w *World) *SpaceState {
 	names := []string{"Wisp", "Ember"}
 	for i := 0; i < botsPerSpace; i++ {
 		botSpec := robotAvatarSpec(i)
+		botColor := "#fb923c"
+		if i%2 == 0 {
+			botColor = "#a78bfa"
+		}
 		b := &Entity{
 			ID:   "bot-" + w.ID + "-" + itoa(i+1),
 			Name: names[i%len(names)],
@@ -195,7 +199,7 @@ func NewSpaceState(w *World) *SpaceState {
 			Dir:  "down",
 			Bot:  true,
 			Avatar: Avatar{
-				Color: map[bool]string{true: "#a78bfa", false: "#fb923c"}[i%2 == 0],
+				Color: botColor,
 				Icon:  "✦",
 				Spec:  &botSpec,
 			},

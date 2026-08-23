@@ -21,6 +21,9 @@ import (
 // entities tables + op_log (the frozen editor op stream) + snapshots.
 type Store struct {
 	db *sql.DB
+	// gravityMu serializes RecomputeGravity so the directory refresh and the
+	// nightly cron never run two full recomputes concurrently.
+	gravityMu sync.Mutex
 }
 
 type User struct {
@@ -187,7 +190,7 @@ func (s *Store) ensureColumn(table, column, ddl string) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
@@ -222,19 +225,23 @@ func (s *Store) SeedDefaults() error {
 		}
 	}
 	// town-square is the hub: patch in portals to the showcase worlds
-	// (append-if-missing — never removes or moves existing portals).
-	if ts, err := s.LoadWorld("town-square"); err == nil {
-		added := false
-		for _, p := range showcaseHubPortals() {
-			if ts.FindPortal(p.ID) == nil {
-				ts.Portals = append(ts.Portals, p)
-				added = true
-			}
+	// (append-if-missing — never removes or moves existing portals). A load
+	// failure here must surface: the hub would silently ship without its
+	// showcase portals.
+	ts, err := s.LoadWorld("town-square")
+	if err != nil {
+		return fmt.Errorf("load hub world for portal patching: %w", err)
+	}
+	added := false
+	for _, p := range showcaseHubPortals() {
+		if ts.FindPortal(p.ID) == nil {
+			ts.Portals = append(ts.Portals, p)
+			added = true
 		}
-		if added {
-			if err := s.SaveWorld(ts); err != nil {
-				return err
-			}
+	}
+	if added {
+		if err := s.SaveWorld(ts); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -336,7 +343,7 @@ func (s *Store) saveChunks(w *World) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	w.mu.RLock()
 	grid := hmf.Grid{}
 	for _, t := range w.Tiles {
@@ -377,7 +384,7 @@ func (s *Store) saveZones(spaceID string, zones []Zone) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`DELETE FROM world_zones WHERE space_id = ?`, spaceID); err != nil {
 		return err
 	}
@@ -395,7 +402,7 @@ func (s *Store) savePortals(spaceID string, portals []Portal) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`DELETE FROM world_portals WHERE space_id = ?`, spaceID); err != nil {
 		return err
 	}
@@ -427,13 +434,17 @@ func (s *Store) LoadWorld(id string) (*World, error) {
 	w.IsShowcase = showcase != 0
 	w.Tiles = map[string]*Tile{}
 	w.ChunkRevs = map[string]int{}
-	w.mu = sync.RWMutex{}
+	// no w.mu = sync.RWMutex{} needed: a zero RWMutex is ready to use.
 
 	chunks, err := s.loadChunks(id)
 	if err != nil {
 		return nil, err
 	}
-	legacy := len(chunks) == 0
+	// legacy = a pre-HMF row: no chunk rows AND tile data in the maps JSON.
+	// An empty HMF world (CreateSpace blank canvas) has no chunks but also an
+	// empty tiles JSON — it must NOT be classified legacy, or every load
+	// would run backfillHMF's three write transactions for nothing.
+	legacy := len(chunks) == 0 && string(tilesB) != "[]"
 	if legacy {
 		// pre-HMF row: fall back to the maps JSON, then backfill chunks.
 		if w.Tiles, err = unmarshalTiles(tilesB); err != nil {
@@ -495,7 +506,7 @@ func (s *Store) loadChunks(spaceID string) ([]chunkRow, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []chunkRow
 	for rows.Next() {
 		var c chunkRow
@@ -524,7 +535,7 @@ func (s *Store) loadZones(spaceID string, w *World) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	w.Zones = nil
 	for rows.Next() {
 		var z Zone
@@ -541,7 +552,7 @@ func (s *Store) loadPortals(spaceID string, w *World) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	w.Portals = nil
 	for rows.Next() {
 		var p Portal
@@ -555,30 +566,24 @@ func (s *Store) loadPortals(spaceID string, w *World) error {
 
 // --- HMF v1 op-stream persistence ---
 
-// SaveChunk persists one chunk row with its new revision.
+// SaveChunk persists one chunk row with its new revision. The WHERE guard on
+// the upsert keeps a stale lower-rev write (e.g. a slower concurrent edit on
+// the same chunk) from ever clobbering a fresher row.
 func (s *Store) SaveChunk(spaceID string, cx, cy, rev int, rle string) error {
 	_, err := s.db.Exec(`INSERT INTO map_chunks (space_id, layer, cx, cy, rev, rle) VALUES (?,?,?,?,?,?)
-		ON CONFLICT(space_id, layer, cx, cy) DO UPDATE SET rev=excluded.rev, rle=excluded.rle`,
+		ON CONFLICT(space_id, layer, cx, cy) DO UPDATE SET rev=excluded.rev, rle=excluded.rle
+		WHERE excluded.rev > map_chunks.rev`,
 		spaceID, "main", cx, cy, rev, rle)
 	return err
 }
 
 // NextOpSeq allocates the next monotonic per-space op sequence number.
+// A single UPDATE ... RETURNING is atomic — the old SELECT-then-UPDATE inside
+// a transaction could interleave two allocations on concurrent edits.
 func (s *Store) NextOpSeq(spaceID string) (int64, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback()
 	var seq int64
-	if err := tx.QueryRow(`SELECT op_seq FROM spaces WHERE id = ?`, spaceID).Scan(&seq); err != nil {
-		return 0, err
-	}
-	seq++
-	if _, err := tx.Exec(`UPDATE spaces SET op_seq = ? WHERE id = ?`, seq, spaceID); err != nil {
-		return 0, err
-	}
-	return seq, tx.Commit()
+	err := s.db.QueryRow(`UPDATE spaces SET op_seq = op_seq + 1 WHERE id = ? RETURNING op_seq`, spaceID).Scan(&seq)
+	return seq, err
 }
 
 // AppendOp records one applied editor op in the append-only op_log.
@@ -599,7 +604,7 @@ func (s *Store) LoadOpLog(spaceID string) ([]hmf.Op, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []hmf.Op
 	for rows.Next() {
 		var b []byte
@@ -651,7 +656,7 @@ func (s *Store) SetPublished(spaceID string, published bool, doc map[string]any)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.Exec(`UPDATE spaces SET is_published = ? WHERE id = ?`, b2i(published), spaceID); err != nil {
 		return err
 	}
@@ -661,8 +666,11 @@ func (s *Store) SetPublished(spaceID string, published bool, doc map[string]any)
 			return err
 		}
 		now := time.Now().UTC().Format(time.RFC3339)
+		// Unique snapshot id: now is second-granularity, so two publishes of
+		// the same space within one second would collide on the primary key
+		// and roll back the whole publish.
 		if _, err := tx.Exec(`INSERT INTO snapshots (id, space_id, name, created_at, world_json) VALUES (?,?,?,?,?)`,
-			"snap-"+spaceID+"-"+now, spaceID, "publish", now, string(b)); err != nil {
+			"snap-"+spaceID+"-"+now+"-"+randHex(4), spaceID, "publish", now, string(b)); err != nil {
 			return err
 		}
 	}

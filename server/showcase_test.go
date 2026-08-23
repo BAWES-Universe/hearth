@@ -175,7 +175,7 @@ func TestApplyGridOp(t *testing.T) {
 
 	// single paint
 	op := &hmf.Op{Op: "paint", X: 2, Y: 3, TileID: 1}
-	changes, err := h.applyGridOp(w, op)
+	changes, _, err := h.applyGridOp(w, op)
 	if err != nil || len(changes) != 1 {
 		t.Fatalf("paint: changes=%v err=%v", changes, err)
 	}
@@ -188,11 +188,11 @@ func TestApplyGridOp(t *testing.T) {
 
 	// batch erase (prior tile preserved for compensating inverse); (4,4) is
 	// painted first so the batch touches two cells.
-	if _, err := h.applyGridOp(w, &hmf.Op{Op: "paint", X: 4, Y: 4, TileID: 1}); err != nil {
+	if _, _, err := h.applyGridOp(w, &hmf.Op{Op: "paint", X: 4, Y: 4, TileID: 1}); err != nil {
 		t.Fatal(err)
 	}
 	op = &hmf.Op{Op: "erase", Cells: []hmf.Cell{{X: 2, Y: 3}, {X: 4, Y: 4}}, TileID: 1}
-	changes, err = h.applyGridOp(w, op)
+	changes, _, err = h.applyGridOp(w, op)
 	if err != nil || len(changes) != 2 {
 		t.Fatalf("erase: changes=%v err=%v", changes, err)
 	}
@@ -205,24 +205,24 @@ func TestApplyGridOp(t *testing.T) {
 
 	// paint same tile twice: second is a no-op (no chunk rev churn)
 	op = &hmf.Op{Op: "paint", X: 5, Y: 5, TileID: 3}
-	if _, err := h.applyGridOp(w, op); err != nil {
+	if _, _, err := h.applyGridOp(w, op); err != nil {
 		t.Fatal(err)
 	}
 	op2 := &hmf.Op{Op: "paint", X: 5, Y: 5, TileID: 3}
-	changes, err = h.applyGridOp(w, op2)
+	changes, _, err = h.applyGridOp(w, op2)
 	if err != nil || len(changes) != 0 {
 		t.Errorf("same-tile paint: changes=%v err=%v, want no-op", changes, err)
 	}
 
 	// out of bounds
 	op = &hmf.Op{Op: "paint", X: 99, Y: 99, TileID: 1}
-	if _, err := h.applyGridOp(w, op); err == nil {
+	if _, _, err := h.applyGridOp(w, op); err == nil {
 		t.Error("out-of-bounds paint: expected error")
 	}
 
 	// unknown tileId
 	op = &hmf.Op{Op: "paint", X: 1, Y: 1, TileID: 200}
-	if _, err := h.applyGridOp(w, op); err == nil {
+	if _, _, err := h.applyGridOp(w, op); err == nil {
 		t.Error("unknown tileId: expected error")
 	}
 
@@ -232,7 +232,7 @@ func TestApplyGridOp(t *testing.T) {
 		big[i] = hmf.Cell{X: i % 16, Y: i / 16}
 	}
 	op = &hmf.Op{Op: "paint", TileID: 1, Cells: big}
-	if _, err := h.applyGridOp(w, op); err == nil {
+	if _, _, err := h.applyGridOp(w, op); err == nil {
 		t.Error("oversized batch: expected error")
 	}
 }

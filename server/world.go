@@ -156,6 +156,11 @@ func (w *World) TileAt(x, y int) string {
 func (w *World) TileList() []Tile {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
+	return w.TileListLocked()
+}
+
+// TileListLocked returns the tile list; caller must hold the read lock.
+func (w *World) TileListLocked() []Tile {
 	out := make([]Tile, 0, len(w.Tiles))
 	for _, t := range w.Tiles {
 		c := *t
@@ -214,17 +219,26 @@ func (w *World) ChunkRev(cx, cy int) int {
 func (w *World) ChunkSummary() []ChunkInfo {
 	w.mu.RLock()
 	defer w.mu.RUnlock()
-	keys := make([]string, 0, len(w.ChunkRevs))
-	for k := range w.ChunkRevs {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := make([]ChunkInfo, 0, len(keys))
-	for _, k := range keys {
+	return w.chunkSummaryLocked()
+}
+
+// chunkSummaryLocked lists chunk revisions; caller must hold the read lock.
+// Sorted numerically by (cy, cx): sorting the "cx,cy" strings was
+// lexicographic (primary key cx, "10,0" before "2,0") and did not match the
+// documented (cy, cx) contract.
+func (w *World) chunkSummaryLocked() []ChunkInfo {
+	out := make([]ChunkInfo, 0, len(w.ChunkRevs))
+	for k, rev := range w.ChunkRevs {
 		var cx, cy int
 		fmt.Sscanf(k, "%d,%d", &cx, &cy)
-		out = append(out, ChunkInfo{CX: cx, CY: cy, Rev: w.ChunkRevs[k]})
+		out = append(out, ChunkInfo{CX: cx, CY: cy, Rev: rev})
 	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CY != out[j].CY {
+			return out[i].CY < out[j].CY
+		}
+		return out[i].CX < out[j].CX
+	})
 	return out
 }
 
@@ -248,38 +262,6 @@ func (w *World) GeoJSON() map[string]any {
 		"palette":     tileTypeList(),
 		"chunks":      w.chunkSummaryLocked(),
 	}
-}
-
-// TileListLocked returns the tile list; caller must hold the read lock.
-func (w *World) TileListLocked() []Tile {
-	out := make([]Tile, 0, len(w.Tiles))
-	for _, t := range w.Tiles {
-		c := *t
-		c.TileID = tileIDs[c.T]
-		out = append(out, c)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Y != out[j].Y {
-			return out[i].Y < out[j].Y
-		}
-		return out[i].X < out[j].X
-	})
-	return out
-}
-
-func (w *World) chunkSummaryLocked() []ChunkInfo {
-	keys := make([]string, 0, len(w.ChunkRevs))
-	for k := range w.ChunkRevs {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := make([]ChunkInfo, 0, len(keys))
-	for _, k := range keys {
-		var cx, cy int
-		fmt.Sscanf(k, "%d,%d", &cx, &cy)
-		out = append(out, ChunkInfo{CX: cx, CY: cy, Rev: w.ChunkRevs[k]})
-	}
-	return out
 }
 
 // WorldJSON is the full world document incl. live entities (GET /api/spaces/{id}).

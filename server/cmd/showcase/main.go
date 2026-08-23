@@ -207,6 +207,17 @@ func abs(n int) int {
 	return n
 }
 
+// tileID is the strict palette lookup for fixture building: a misspelled
+// tile name must fail the build loudly, not silently become floor (which
+// hmf.TileID's lenient 0-for-unknown would turn into erased terrain).
+func tileID(name string) int {
+	id, ok := hmf.TileIDOK(name)
+	if !ok {
+		panic("showcase: unknown tile name " + name)
+	}
+	return id
+}
+
 // toFixture serializes the built world as an HMF v1 fixture.
 func (wb *worldBuilder) toFixture() fixture {
 	// chunk the applied grid exactly like the server does
@@ -214,7 +225,9 @@ func (wb *worldBuilder) toFixture() fixture {
 	var chunks []chunkInfo
 	for k := range wb.grid {
 		var x, y int
-		fmt.Sscanf(k, "%d,%d", &x, &y)
+		if _, err := fmt.Sscanf(k, "%d,%d", &x, &y); err != nil {
+			panic(fmt.Sprintf("%s: bad grid key %q: %v", wb.id, k, err))
+		}
 		cx, cy := hmf.ChunkOf(x, y)
 		ck := fmt.Sprintf("%d,%d", cx, cy)
 		if chunkSeen[ck] {
@@ -245,10 +258,11 @@ func writeFixture(fx fixture, dir string) error {
 	}
 	b = append(b, '\n')
 	path := filepath.Join(dir, fx.ID+".json")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// generated source assets — no need for world/group-writable bits
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, b, 0o644); err != nil {
+	if err := os.WriteFile(path, b, 0o600); err != nil {
 		return err
 	}
 	fmt.Printf("wrote %s: %dx%d, %d chunks, %d ops, %d portals, %d zones\n",
@@ -262,16 +276,16 @@ func writeFixture(fx fixture, dir string) error {
 // and a path, plus a portal back to town-square.
 func buildGarden() *worldBuilder {
 	wb := newWorld("garden", "Garden", 48, 32, 24, 16)
-	wb.fill(24, 16, hmf.TileID("grass"))        // base lawn
-	wb.ring(1, 1, 46, 30, hmf.TileID("tree"))   // tree border
-	wb.rect(28, 8, 34, 14, hmf.TileID("water")) // pond
-	wb.ring(27, 7, 35, 15, hmf.TileID("rock"))  // pond rocks
-	wb.line(4, 16, 44, 16, hmf.TileID("path"))  // main path
-	wb.line(24, 2, 24, 29, hmf.TileID("path"))  // cross path
-	wb.rect(8, 4, 12, 6, hmf.TileID("flower"))  // flower bed A
-	wb.rect(36, 20, 40, 22, hmf.TileID("flower")) // flower bed B
-	wb.rect(6, 22, 8, 25, hmf.TileID("bush"))   // bush cluster
-	wb.rect(40, 5, 42, 8, hmf.TileID("bush"))   // bush cluster
+	wb.fill(24, 16, tileID("grass"))        // base lawn
+	wb.ring(1, 1, 46, 30, tileID("tree"))   // tree border
+	wb.rect(28, 8, 34, 14, tileID("water")) // pond
+	wb.ring(27, 7, 35, 15, tileID("rock"))  // pond rocks
+	wb.line(4, 16, 44, 16, tileID("path"))  // main path
+	wb.line(24, 2, 24, 29, tileID("path"))  // cross path
+	wb.rect(8, 4, 12, 6, tileID("flower"))  // flower bed A
+	wb.rect(36, 20, 40, 22, tileID("flower")) // flower bed B
+	wb.rect(6, 22, 8, 25, tileID("bush"))   // bush cluster
+	wb.rect(40, 5, 42, 8, tileID("bush"))   // bush cluster
 	wb.portal(hmf.Portal{ID: "garden-to-town", X: 44, Y: 16, TargetSpace: "town-square", TargetX: 4, TargetY: 16})
 	wb.zone(hmf.Zone{ID: "garden", Name: "Garden", X: 0, Y: 0, W: 48, H: 32})
 	return wb
@@ -281,18 +295,18 @@ func buildGarden() *worldBuilder {
 // ice corner and a small lava pit, plus a portal back to town-square.
 func buildLab() *worldBuilder {
 	wb := newWorld("lab", "Lab", 40, 32, 20, 16)
-	wb.fill(20, 16, hmf.TileID("stone"))        // stone base
-	wb.ring(1, 1, 38, 30, hmf.TileID("wall"))   // outer walls
-	wb.line(20, 4, 20, 27, hmf.TileID("wall"))  // central divide
-	wb.line(4, 12, 36, 12, hmf.TileID("wall"))  // cross wall A
-	wb.line(4, 20, 36, 20, hmf.TileID("wall"))  // cross wall B
+	wb.fill(20, 16, tileID("stone"))        // stone base
+	wb.ring(1, 1, 38, 30, tileID("wall"))   // outer walls
+	wb.line(20, 4, 20, 27, tileID("wall"))  // central divide
+	wb.line(4, 12, 36, 12, tileID("wall"))  // cross wall A
+	wb.line(4, 20, 36, 20, tileID("wall"))  // cross wall B
 	wb.brush(20, 12, hmf.FloorTile)             // door gap (erase)
 	wb.brush(20, 20, hmf.FloorTile)             // door gap
-	wb.rect(6, 14, 9, 17, hmf.TileID("crystal")) // crystal cluster (east room)
-	wb.rect(30, 14, 32, 17, hmf.TileID("crystal")) // crystal cluster
-	wb.rect(28, 4, 32, 6, hmf.TileID("ice"))    // ice patch
-	wb.rect(6, 24, 10, 27, hmf.TileID("lava"))  // lava pit (west room)
-	wb.ring(5, 23, 11, 28, hmf.TileID("wall"))  // lava containment
+	wb.rect(6, 14, 9, 17, tileID("crystal")) // crystal cluster (east room)
+	wb.rect(30, 14, 32, 17, tileID("crystal")) // crystal cluster
+	wb.rect(28, 4, 32, 6, tileID("ice"))    // ice patch
+	wb.rect(6, 24, 10, 27, tileID("lava"))  // lava pit (west room)
+	wb.ring(5, 23, 11, 28, tileID("wall"))  // lava containment
 	wb.portal(hmf.Portal{ID: "lab-to-town", X: 36, Y: 16, TargetSpace: "town-square", TargetX: 27, TargetY: 8})
 	wb.zone(hmf.Zone{ID: "lab", Name: "Lab", X: 0, Y: 0, W: 40, H: 32})
 	return wb
@@ -302,16 +316,16 @@ func buildLab() *worldBuilder {
 // carpet path, plus a portal back to town-square.
 func buildHall() *worldBuilder {
 	wb := newWorld("hall", "Hall", 48, 32, 24, 16)
-	wb.fill(24, 16, hmf.TileID("wood"))         // wood base
-	wb.ring(1, 1, 46, 30, hmf.TileID("wall"))   // outer walls
-	wb.rect(1, 1, 46, 2, hmf.TileID("roof"))    // roof eaves (top)
-	wb.line(4, 16, 44, 16, hmf.TileID("path"))  // carpet path
-	wb.rect(10, 8, 11, 9, hmf.TileID("wall"))   // pillar
-	wb.rect(10, 22, 11, 23, hmf.TileID("wall")) // pillar
-	wb.rect(24, 6, 25, 7, hmf.TileID("wall"))   // pillar
-	wb.rect(24, 24, 25, 25, hmf.TileID("wall")) // pillar
-	wb.rect(36, 8, 37, 9, hmf.TileID("wall"))   // pillar
-	wb.rect(36, 22, 37, 23, hmf.TileID("wall")) // pillar
+	wb.fill(24, 16, tileID("wood"))         // wood base
+	wb.ring(1, 1, 46, 30, tileID("wall"))   // outer walls
+	wb.rect(1, 1, 46, 2, tileID("roof"))    // roof eaves (top)
+	wb.line(4, 16, 44, 16, tileID("path"))  // carpet path
+	wb.rect(10, 8, 11, 9, tileID("wall"))   // pillar
+	wb.rect(10, 22, 11, 23, tileID("wall")) // pillar
+	wb.rect(24, 6, 25, 7, tileID("wall"))   // pillar
+	wb.rect(24, 24, 25, 25, tileID("wall")) // pillar
+	wb.rect(36, 8, 37, 9, tileID("wall"))   // pillar
+	wb.rect(36, 22, 37, 23, tileID("wall")) // pillar
 	wb.brush(24, 1, hmf.FloorTile)              // entrance gap in the north wall
 	wb.brush(25, 1, hmf.FloorTile)
 	wb.brush(24, 2, hmf.FloorTile)

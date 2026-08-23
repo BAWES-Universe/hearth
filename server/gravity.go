@@ -5,7 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"strings"
+	"math"
+	"net"
 	"time"
 )
 
@@ -110,9 +111,15 @@ func (s *Store) MigrateS1() error {
 		var name, ctype string
 		var notnull, pk int
 		var dflt any
-		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err == nil {
-			existing[name] = true
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			rows.Close()
+			return fmt.Errorf("pragma spaces scan: %w", err)
 		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("pragma spaces iterate: %w", err)
 	}
 	rows.Close()
 	for _, c := range cols {
@@ -146,6 +153,9 @@ func (s *Store) MigrateS1() error {
 
 // ensureSeedFlags marks a seeded world published (and optionally showcase)
 // without touching user worlds or clobbering existing published_at.
+// The showcase flag is applied UNCONDITIONALLY (no is_published guard): on a
+// DB where the seed was already published before this function ran, the flag
+// must still land or town-square/garden/lab/hall stay non-showcase forever.
 func (s *Store) ensureSeedFlags(id string, showcase bool) error {
 	var n int
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM spaces WHERE id = ?`, id).Scan(&n); err != nil {
@@ -154,9 +164,10 @@ func (s *Store) ensureSeedFlags(id string, showcase bool) error {
 	if n == 0 {
 		return nil // not seeded (yet) — S3 may add it later
 	}
-	_, err := s.db.Exec(`UPDATE spaces SET is_published = 1, is_showcase = CASE WHEN ? THEN 1 ELSE is_showcase END,
+	_, err := s.db.Exec(`UPDATE spaces SET is_published = 1,
+		is_showcase = CASE WHEN ? THEN 1 ELSE is_showcase END,
 		published_at = CASE WHEN published_at IS NULL OR published_at = '' THEN created_at ELSE published_at END
-		WHERE id = ? AND is_published = 0`, showcase, id)
+		WHERE id = ?`, showcase, id)
 	return err
 }
 
@@ -262,9 +273,16 @@ type activityRow struct {
 	TS      time.Time
 }
 
-// loadActivityRows loads all activity events (ordered by id for determinism).
+// loadActivityRows loads the activity events inside the gravity lookback
+// window (ordered by id for determinism). The table is append-only and grows
+// without limit, so the scan is bounded: events older than gravityLookbackDays
+// contribute ~0 momentum anyway (2^(-30/14) ~ 0.23 and falling), and Reach is
+// defined as distinct visitors within the window (current audience, not
+// all-time). Love also only counts contributions inside the window.
 func (s *Store) loadActivityRows() ([]activityRow, error) {
-	rows, err := s.db.Query(`SELECT world_id, actor, kind, action, ts FROM activity_events ORDER BY id`)
+	cutoff := time.Now().UTC().Add(-gravityLookbackDays * 24 * time.Hour).Format(time.RFC3339)
+	rows, err := s.db.Query(`SELECT world_id, actor, kind, action, ts FROM activity_events
+		WHERE ts >= ? ORDER BY id`, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -288,7 +306,8 @@ func (s *Store) loadActivityRows() ([]activityRow, error) {
 //
 // Love     = sum of contributions with a per-day cap per actor
 //            (max gravityPerDayCap contribution events per actor/world/day).
-// Reach    = audience: distinct visitors (join events, unique actor).
+// Reach    = audience: distinct visitors in the lookback window (join events,
+//            unique actor) — loadActivityRows bounds the scan to the window.
 // Momentum = recency: sum of 2^(-ageDays/14) over events in the lookback
 //            window (14-day half-life).
 // Gravity  = (1+Love) * (1+Reach) * (1+Momentum) — monotone in every factor,
@@ -324,19 +343,21 @@ func computeGravityFor(rows []activityRow, now time.Time) (love, reach, momentum
 	return love, reach, momentum, gravity
 }
 
-func pow2(x float64) float64 {
-	// 2^x without math.Pow float32 surprises; keep it simple and deterministic.
-	r := 1.0
-	exp := x
-	for i := 0; i < 60; i++ {
-		r *= 1.0 + exp/60.0
-	}
-	return r
-}
+// pow2 returns 2^x exactly (math.Pow is float64 and deterministic for
+// identical inputs). The previous approximation (1+x/60)^60 computed e^x,
+// not 2^x, which made the 14-day momentum half-life wrong (it decayed at
+// 14*ln2 ≈ 9.7 days instead).
+func pow2(x float64) float64 { return math.Pow(2, x) }
 
 // RecomputeGravity recomputes scores for ALL worlds and persists them.
 // Deterministic: identical activity_events input => identical scores.
+// Serialized by gravityMu: the directory refresh (ensureGravityFresh on the
+// request thread) and gravityCron can otherwise run two full recomputes at
+// the same time, duplicating work and mixing computed_at rows.
 func (s *Store) RecomputeGravity() error {
+	s.gravityMu.Lock()
+	defer s.gravityMu.Unlock()
+
 	rows, err := s.loadActivityRows()
 	if err != nil {
 		return err
@@ -355,9 +376,15 @@ func (s *Store) RecomputeGravity() error {
 	}
 	for idRows.Next() {
 		var id string
-		if idRows.Scan(&id) == nil {
-			ids = append(ids, id)
+		if err := idRows.Scan(&id); err != nil {
+			idRows.Close()
+			return err
 		}
+		ids = append(ids, id)
+	}
+	if err := idRows.Err(); err != nil {
+		idRows.Close()
+		return err
 	}
 	idRows.Close()
 	for _, id := range ids {
@@ -391,9 +418,14 @@ func (s *Store) GravityScoreFor(id string) GravityScore {
 
 // lastGravityCompute returns the newest computed_at across all worlds ("" if none).
 func (s *Store) lastGravityCompute() string {
-	var ts string
-	_ = s.db.QueryRow(`SELECT MAX(computed_at) FROM gravity_scores`).Scan(&ts)
-	return ts
+	var ts sql.NullString
+	if err := s.db.QueryRow(`SELECT MAX(computed_at) FROM gravity_scores`).Scan(&ts); err != nil {
+		return ""
+	}
+	if !ts.Valid {
+		return ""
+	}
+	return ts.String
 }
 
 // ensureGravityFresh recomputes when the persisted scores are stale or missing.
@@ -449,10 +481,26 @@ func diffJSON(v any) string {
 	return string(b)
 }
 
-// sanitizeIP trims port from a RemoteAddr (e.g. "1.2.3.4:5678" -> "1.2.3.4").
+// sanitizeIP anonymizes a RemoteAddr before it reaches the append-only
+// activity log: the port is stripped and the address is truncated to its
+// /24 (IPv4) or /48 (IPv6) network prefix. Full client IPs must not be
+// retained forever in an append-only, publicly readable table.
 func sanitizeIP(remoteAddr string) string {
-	if i := strings.LastIndex(remoteAddr, ":"); i > 0 {
-		return remoteAddr[:i]
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
 	}
-	return remoteAddr
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if v4 := ip.To4(); v4 != nil {
+		v4[3] = 0
+		return v4.String()
+	}
+	// IPv6: keep the /48 prefix (first 6 bytes), zero the rest.
+	for i := 6; i < len(ip); i++ {
+		ip[i] = 0
+	}
+	return ip.String()
 }

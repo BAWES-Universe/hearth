@@ -22,6 +22,7 @@ type EditAck struct {
 // arbitrated, LWW by arrival order) and persists the deltas. The returned
 // ack is broadcast to everyone in the space, including the acting client —
 // the client editor uses priorTileId/chunk revs for undo + refetch/replay.
+// Authorization (ownership) is enforced by handleEdit BEFORE calling this.
 func (h *Hub) applyEditOp(sp *SpaceState, c *Client, op *hmf.Op) *EditAck {
 	w := sp.World
 	op.SpaceID = w.ID
@@ -59,7 +60,9 @@ func (h *Hub) applyEditOp(sp *SpaceState, c *Client, op *hmf.Op) *EditAck {
 		return ack
 	}
 
-	changes, err := h.applyGridOp(w, op)
+	// Build the world grid ONCE per op and reuse it for every touched chunk —
+	// the previous path rebuilt the full grid again inside each persistChunk.
+	changes, grid, err := h.applyGridOp(w, op)
 	if err != nil {
 		ack.Err = err.Error()
 		return ack
@@ -81,7 +84,7 @@ func (h *Hub) applyEditOp(sp *SpaceState, c *Client, op *hmf.Op) *EditAck {
 	}
 	for _, ci := range touched {
 		ack.Chunks = append(ack.Chunks, ci)
-		if err := h.persistChunk(w, ci.CX, ci.CY); err != nil {
+		if err := h.persistChunk(w, ci.CX, ci.CY, grid); err != nil {
 			log.Printf("persist chunk %s %d,%d: %v", w.ID, ci.CX, ci.CY, err)
 		}
 	}
@@ -89,30 +92,30 @@ func (h *Hub) applyEditOp(sp *SpaceState, c *Client, op *hmf.Op) *EditAck {
 }
 
 // applyGridOp applies a paint/erase/place op to the world tile map (sparse
-// names in RAM; hmf.Grid conversion for the pure op semantics).
-func (h *Hub) applyGridOp(w *World, op *hmf.Op) ([]hmf.CellChange, error) {
+// names in RAM; hmf.Grid conversion for the pure op semantics). It returns
+// the changed cells AND the post-apply grid snapshot, so the caller can
+// persist every touched chunk without rebuilding the grid per chunk.
+func (h *Hub) applyGridOp(w *World, op *hmf.Op) ([]hmf.CellChange, hmf.Grid, error) {
 	if op.Op != "erase" && op.TileID != hmf.FloorTile && hmf.TileName(op.TileID) == "" {
-		return nil, errors.New("edit_rejected: unknown tileId " + itoa(op.TileID))
+		return nil, nil, errors.New("edit_rejected: unknown tileId " + itoa(op.TileID))
 	}
-	w.mu.RLock()
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	grid := hmf.Grid{}
 	for _, t := range w.Tiles {
 		grid[hmf.Key(t.X, t.Y)] = TileID(t.T)
 	}
-	w.mu.RUnlock()
 	changes, err := hmf.ApplyOp(grid, w.Width, w.Height, op)
 	if err != nil {
-		return nil, errors.New("edit_rejected: " + err.Error())
+		return nil, nil, errors.New("edit_rejected: " + err.Error())
 	}
 	if len(changes) == 0 {
-		return nil, nil
+		return nil, grid, nil
 	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
 	for _, ch := range changes {
 		w.setTileLocked(ch.X, ch.Y, hmf.TileName(ch.TileID))
 	}
-	return changes, nil
+	return changes, grid, nil
 }
 
 // applyPortalOp upserts or removes a portal (RAM + world_portals row).
@@ -166,6 +169,13 @@ func (h *Hub) applyZoneOp(w *World, op *hmf.Op) error {
 		if z.ID == "" {
 			return errors.New("edit_rejected: zone op requires id")
 		}
+		// same bounds validation the portal path applies: a zone with
+		// negative coords or a rect larger than the world must not reach
+		// the world document and every client.
+		if z.X < 0 || z.Y < 0 || z.W <= 0 || z.H <= 0 ||
+			z.X+z.W > w.Width || z.Y+z.H > w.Height {
+			return errors.New("edit_rejected: zone outside map bounds")
+		}
 		w.mu.Lock()
 		idx := -1
 		for i := range w.Zones {
@@ -196,15 +206,13 @@ func (h *Hub) applyZoneOp(w *World, op *hmf.Op) error {
 	return errors.New("edit_rejected: zone op requires zone payload or zoneId")
 }
 
-// persistChunk re-encodes one chunk from the live world and stores it with
-// its current revision.
-func (h *Hub) persistChunk(w *World, cx, cy int) error {
-	w.mu.RLock()
-	grid := hmf.Grid{}
-	for _, t := range w.Tiles {
-		grid[hmf.Key(t.X, t.Y)] = TileID(t.T)
-	}
-	w.mu.RUnlock()
+// persistChunk re-encodes one chunk from a pre-built grid snapshot and stores
+// it with its current revision. The grid is built once per op by applyGridOp
+// and shared across all touched chunks (was rebuilt per chunk before).
+// Callers must pass a POST-apply snapshot: the rev-guard in SaveChunk
+// (excluded.rev > map_chunks.rev) keeps a stale lower-rev write from ever
+// clobbering a fresher one when two edits race on the same chunk.
+func (h *Hub) persistChunk(w *World, cx, cy int, grid hmf.Grid) error {
 	chunk := hmf.EncodeChunk(grid, w.Width, w.Height, cx, cy)
 	return h.store.SaveChunk(w.ID, cx, cy, w.ChunkRev(cx, cy), hmf.EncodeRLE(chunk))
 }
@@ -223,7 +231,10 @@ func (h *Hub) handleChunkGet(sp *SpaceState, c *Client, op *hmf.Op) {
 	for _, t := range w.Tiles {
 		grid[hmf.Key(t.X, t.Y)] = TileID(t.T)
 	}
-	rev := w.ChunkRev(op.CX, op.CY)
+	// Read the revision under the lock we already hold: w.ChunkRev() takes
+	// its own RLock, and sync.RWMutex is not reentrant — a writer waiting
+	// between the two RLock calls would deadlock both goroutines.
+	rev := w.ChunkRevs[chunkKey(op.CX, op.CY)]
 	w.mu.RUnlock()
 	chunk := hmf.EncodeChunk(grid, w.Width, w.Height, op.CX, op.CY)
 	rle := hmf.EncodeRLE(chunk)
@@ -240,21 +251,6 @@ func (h *Hub) handleChunkGet(sp *SpaceState, c *Client, op *hmf.Op) {
 		"tiles": tiles,
 	})
 	log.Printf("chunk_get: %s %d,%d rev=%d (%d tiles)", w.ID, op.CX, op.CY, rev, len(tiles))
-}
-
-// recordOp allocates the next op seq and appends the op to the op_log.
-// Called by handleEdit after a successful apply.
-func (h *Hub) recordOp(spaceID string, op *hmf.Op) int64 {
-	seq, err := h.store.NextOpSeq(spaceID)
-	if err != nil {
-		log.Printf("next op seq %s: %v", spaceID, err)
-		return 0
-	}
-	op.Seq = seq
-	if err := h.store.AppendOp(spaceID, seq, op); err != nil {
-		log.Printf("append op %s: %v", spaceID, err)
-	}
-	return seq
 }
 
 // chunkTimestamp is a stable RFC3339 now (for ack payloads).

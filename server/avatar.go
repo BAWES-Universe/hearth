@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -285,7 +287,9 @@ func avatarStore() (*AvatarStore, error) {
 			spec TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`); err != nil {
-			db.Close()
+			if cerr := db.Close(); cerr != nil {
+				log.Printf("avatar store close: %v", cerr)
+			}
 			avatarStoreErr = fmt.Errorf("avatar store migrate: %w", err)
 			return
 		}
@@ -295,12 +299,16 @@ func avatarStore() (*AvatarStore, error) {
 }
 
 // Get returns the stored spec for a member (user id = sha256(deviceKey)).
+// Context-bounded so a stalled SQLite write cannot block the join path
+// indefinitely (resolveAvatarSpec runs synchronously on the WS read loop).
 func (s *AvatarStore) Get(userID string) (AvatarSpec, bool) {
 	if s == nil || s.db == nil {
 		return AvatarSpec{}, false
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 	var raw string
-	err := s.db.QueryRow(`SELECT spec FROM avatar_specs WHERE user_id = ?`, userID).Scan(&raw)
+	err := s.db.QueryRowContext(ctx, `SELECT spec FROM avatar_specs WHERE user_id = ?`, userID).Scan(&raw)
 	if err == nil {
 		var spec AvatarSpec
 		if json.Unmarshal([]byte(raw), &spec) == nil {
@@ -323,7 +331,9 @@ func (s *AvatarStore) Put(userID string, spec AvatarSpec) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO avatar_specs (user_id, spec, updated_at) VALUES (?, ?, ?)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = s.db.ExecContext(ctx, `INSERT INTO avatar_specs (user_id, spec, updated_at) VALUES (?, ?, ?)
 		ON CONFLICT(user_id) DO UPDATE SET spec = excluded.spec, updated_at = excluded.updated_at`,
 		userID, string(b), time.Now().UTC().Format(time.RFC3339))
 	if err != nil {

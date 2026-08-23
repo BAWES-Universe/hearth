@@ -2,10 +2,10 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -25,19 +25,16 @@ import (
 // published). Everything here is read-only or write-once (create/publish)
 // and appends audit rows via Store.Emit for S9.
 
-// sessionFromRequest resolves the session cookie (or ?deviceKey= fallback)
-// mirroring resolveAuth. Returns nil when unauthenticated.
+// sessionFromRequest resolves the session cookie only (mirrors resolveAuth).
+// A deviceKey is NOT accepted from the URL query: query strings leak through
+// proxy logs, Referer headers and browser history, and the old fallback also
+// wrote a session row on every read. Guests authenticate via POST
+// /api/auth/guest (sets the httpOnly cookie) or the WS join payload.
+// Returns nil when unauthenticated.
 func (h *Hub) sessionFromRequest(r *http.Request) *Session {
 	if ck, err := r.Cookie(cookieName); err == nil && ck.Value != "" {
 		if s, err := h.store.GetSession(ck.Value); err == nil && s != nil {
 			return s
-		}
-	}
-	if dk := r.URL.Query().Get("deviceKey"); dk != "" {
-		if u, err := h.store.UpsertUser(dk, ""); err == nil {
-			if s, err := h.store.CreateSession(u); err == nil {
-				return s
-			}
 		}
 	}
 	return nil
@@ -97,7 +94,7 @@ func (h *Hub) worldActivity(w http.ResponseWriter, r *http.Request, id string) {
 	}
 	limit := 20
 	if v := r.URL.Query().Get("limit"); v != "" {
-		if n, err := parseInt(v); err == nil {
+		if n, err := strconv.Atoi(v); err == nil {
 			limit = n
 		}
 	}
@@ -109,16 +106,8 @@ func (h *Hub) worldActivity(w http.ResponseWriter, r *http.Request, id string) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "worldId": id, "events": events})
 }
 
-func parseInt(s string) (int, error) {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0, fmt.Errorf("not a number")
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n, nil
-}
+// parseInt was a hand-rolled digit parser, replaced by strconv.Atoi (which
+// also catches overflow). Deleted — all call sites use strconv directly.
 
 // createWorld: POST /api/worlds — blank canvas draft owned by the session user.
 // <60s "My world" flow: create -> (S3 editor paints) -> publish.
@@ -133,6 +122,7 @@ func (h *Hub) createWorld(w http.ResponseWriter, r *http.Request) {
 		Width  int    `json:"width"`
 		Height int    `json:"height"`
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10) // 16KB: name + dimensions only
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "bad JSON"})
 		return
@@ -164,7 +154,10 @@ func (h *Hub) createWorld(w http.ResponseWriter, r *http.Request) {
 }
 
 // publishWorld: POST /api/worlds/{id}/publish — draft -> published.
-// Owner-only (or seed worlds with no owner). Emits an audit row for S9.
+// Owner-only. Ownerless worlds may only be published by the system (seeds):
+// an ownerless, non-showcase world is not publishable by any client, so a
+// stolen deviceKey or a stale row can never surface a world into the public
+// directory. Emits an audit row for S9.
 func (h *Hub) publishWorld(w http.ResponseWriter, r *http.Request, id string) {
 	sess := h.sessionFromRequest(r)
 	if sess == nil {
@@ -177,6 +170,10 @@ func (h *Hub) publishWorld(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	if meta.OwnerID != "" && meta.OwnerID != sess.UserID {
+		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "only the owner can publish this world"})
+		return
+	}
+	if meta.OwnerID == "" && !meta.IsShowcase {
 		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "only the owner can publish this world"})
 		return
 	}
@@ -251,19 +248,27 @@ func (h *Hub) listWorlds(w http.ResponseWriter, r *http.Request) {
 	var ids []string
 	for rows.Next() {
 		var id string
-		if rows.Scan(&id) == nil {
-			ids = append(ids, id)
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
+			return
 		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
+		return
 	}
 	rows.Close()
 
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	type dirEntry struct {
-		id       string
-		name     string
-		gravity  float64
-		recency  string // published_at (fallback created_at) for tie-break
-		created  string
+		id      string
+		name    string
+		meta    WorldMeta
+		score   GravityScore
+		recency string // published_at (fallback created_at) for tie-break
 	}
 	entries := make([]dirEntry, 0, len(ids))
 	for _, id := range ids {
@@ -278,12 +283,14 @@ func (h *Hub) listWorlds(w http.ResponseWriter, r *http.Request) {
 		if rec == "" {
 			rec = meta.CreatedAt
 		}
-		entries = append(entries, dirEntry{id: id, name: meta.Name, gravity: h.store.GravityScoreFor(id).Gravity, recency: rec, created: meta.CreatedAt})
+		// fetch meta + score exactly once per world and reuse for both the
+		// sort and the output loop (was 4 queries per world).
+		entries = append(entries, dirEntry{id: id, name: meta.Name, meta: meta, score: h.store.GravityScoreFor(id), recency: rec})
 	}
 	// gravity desc, then recency desc, then id asc (deterministic)
 	sort.SliceStable(entries, func(i, j int) bool {
-		if entries[i].gravity != entries[j].gravity {
-			return entries[i].gravity > entries[j].gravity
+		if entries[i].score.Gravity != entries[j].score.Gravity {
+			return entries[i].score.Gravity > entries[j].score.Gravity
 		}
 		if entries[i].recency != entries[j].recency {
 			return entries[i].recency > entries[j].recency
@@ -293,8 +300,7 @@ func (h *Hub) listWorlds(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]map[string]any, 0, len(entries))
 	for _, e := range entries {
-		meta, _ := h.store.worldMeta(e.id)
-		score := h.store.GravityScoreFor(e.id)
+		meta, score := e.meta, e.score
 		headcount := 0
 		if sp := h.space(e.id); sp != nil {
 			for _, ent := range sp.EntitySnaps() {
