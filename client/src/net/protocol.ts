@@ -8,8 +8,26 @@ export interface Envelope {
   d: unknown;
 }
 
+// UUID v4 with a Math.random fallback: crypto.randomUUID is undefined on
+// non-secure (plain http) origins, which would throw inside env() and kill
+// the join before anything is sent (the infinite-loading bug).
+export function uuid(): string {
+  try {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID();
+    }
+  } catch {
+    /* insecure context — fall back below */
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 export function env(t: string, d: unknown): Envelope {
-  return { v: 1, t, id: crypto.randomUUID(), ts: Date.now(), d };
+  return { v: 1, t, id: uuid(), ts: Date.now(), d };
 }
 
 export interface RosterEntry {
@@ -23,6 +41,7 @@ export interface RosterEntry {
 export interface Welcome {
   selfId: string;
   space?: string;
+  spaceId?: string;
   world?: unknown;
   roster?: RosterEntry[];
 }

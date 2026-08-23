@@ -274,6 +274,9 @@ func (c *Client) handleJoin(msg map[string]any) {
 	name := getString(msg, "name")
 	spaceID := getString(msg, "spaceId")
 	if spaceID == "" {
+		spaceID = getString(msg, "space") // client sends "space"
+	}
+	if spaceID == "" {
 		spaceID = "hearth"
 	}
 
