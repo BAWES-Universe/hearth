@@ -3,6 +3,7 @@ package media
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -32,6 +33,17 @@ type testClient struct {
 	subOffersSeen  atomic.Int64 // subscriber offers relayed to us (must stay 1)
 	subMlines      atomic.Int64 // m= lines in the first subscriber offer
 	subSDPSeen     atomic.Bool
+
+	// Trickle-ICE ordering: our own candidates must not reach the SFU before
+	// the matching offer/answer does — pion's AddICECandidate rejects a
+	// candidate that arrives before the remote description is set, and the
+	// dropped candidate silently stalls ICE in "connecting" forever. Candidates
+	// are queued here and flushed right after the SFU accepts our SDP.
+	iceMu         sync.Mutex
+	pubICEPending []webrtc.ICECandidateInit
+	pubSDPSent    bool
+	subICEPending []webrtc.ICECandidateInit
+	subSDPSent    bool
 }
 
 func newTestClient(t *testing.T, m *Media, id string) *testClient {
@@ -49,20 +61,21 @@ func newTestClient(t *testing.T, m *Media, id string) *testClient {
 		t.Fatalf("%s: sub PC: %v", id, err)
 	}
 
-	// Our candidates -> SFU.
+	// Our candidates -> SFU (queued until the matching SDP is accepted — see
+	// queueICE).
 	c.pub.OnICECandidate(func(cand *webrtc.ICECandidate) {
 		if cand == nil {
 			return
 		}
-		c := cand.ToJSON()
-		_, _ = m.HandleSignal(id, SignalMsg{Type: SigICE, PC: PCPublisher, PeerID: id, Candidate: &c})
+		ci := cand.ToJSON()
+		c.queueICE(PCPublisher, &ci)
 	})
 	c.sub.OnICECandidate(func(cand *webrtc.ICECandidate) {
 		if cand == nil {
 			return
 		}
-		c := cand.ToJSON()
-		_, _ = m.HandleSignal(id, SignalMsg{Type: SigICE, PC: PCSubscriber, PeerID: id, Candidate: &c})
+		ci := cand.ToJSON()
+		c.queueICE(PCSubscriber, &ci)
 	})
 
 	// Incoming media from the SFU -> counters, classified by the msid the SFU
@@ -92,6 +105,49 @@ func newTestClient(t *testing.T, m *Media, id string) *testClient {
 	}
 	c.runRelay()
 	return c
+}
+
+// queueICE buffers a local ICE candidate until this client's matching SDP
+// (the publisher offer, or the subscriber answer) has been accepted by the
+// SFU. Trickle-ICE ordering: a candidate delivered to the SFU before
+// SetRemoteDescription would be rejected by pion and silently lost, stalling
+// ICE in "connecting" forever. After the first SDP round-trip the gate is
+// open and candidates pass straight through.
+func (c *testClient) queueICE(pc PCKind, cand *webrtc.ICECandidateInit) {
+	c.iceMu.Lock()
+	defer c.iceMu.Unlock()
+	if pc == PCPublisher {
+		if c.pubSDPSent {
+			_, _ = c.m.HandleSignal(c.id, SignalMsg{Type: SigICE, PC: pc, PeerID: c.id, Candidate: cand})
+			return
+		}
+		c.pubICEPending = append(c.pubICEPending, *cand)
+		return
+	}
+	if c.subSDPSent {
+		_, _ = c.m.HandleSignal(c.id, SignalMsg{Type: SigICE, PC: pc, PeerID: c.id, Candidate: cand})
+		return
+	}
+	c.subICEPending = append(c.subICEPending, *cand)
+}
+
+// flushICE delivers queued candidates to the SFU. Call it immediately after
+// HandleSignal accepted the matching offer (publisher PC) or answer
+// (subscriber PC), so AddICECandidate on the SFU side always succeeds.
+func (c *testClient) flushICE(pc PCKind) {
+	c.iceMu.Lock()
+	var pending []webrtc.ICECandidateInit
+	if pc == PCPublisher {
+		pending, c.pubICEPending = c.pubICEPending, nil
+		c.pubSDPSent = true
+	} else {
+		pending, c.subICEPending = c.subICEPending, nil
+		c.subSDPSent = true
+	}
+	c.iceMu.Unlock()
+	for i := range pending {
+		_, _ = c.m.HandleSignal(c.id, SignalMsg{Type: SigICE, PC: pc, PeerID: c.id, Candidate: &pending[i]})
+	}
 }
 
 // runRelay consumes Media events addressed to this client and drives its PCs.
@@ -129,6 +185,7 @@ func (c *testClient) runRelay() {
 					c.t.Errorf("%s: relay answer: %v", c.id, err)
 					return
 				}
+				c.flushICE(PCSubscriber) // SFU has our answer: safe to trickle our candidates now
 			case SigICE:
 				if ev.Candidate == nil {
 					continue
@@ -146,7 +203,8 @@ func (c *testClient) runRelay() {
 }
 
 // addTrackAndOffer publishes one track on the publisher PC (offer/answer
-// round-trip through the SFU; renegotiation on the publisher side is allowed).
+// round-trip through the SFU). Pre-negotiated design: each publisher sends
+// ONE offer containing everything it will publish — no renegotiation.
 func (c *testClient) addTrackAndOffer(tr *webrtc.TrackLocalStaticRTP) {
 	c.addTracksAndOffer(tr)
 }
@@ -170,6 +228,7 @@ func (c *testClient) addTracksAndOffer(tracks ...*webrtc.TrackLocalStaticRTP) {
 	if err != nil {
 		c.t.Fatalf("%s: publisher offer -> SFU: %v", c.id, err)
 	}
+	c.flushICE(PCPublisher) // SFU has our offer: safe to trickle our candidates now
 	for _, o := range out {
 		if o.Type == SigAnswer && o.SDP != nil {
 			c.t.Logf("%s: SFU answer: %d m-lines", c.id, countMlines(o.SDP.SDP))
@@ -243,7 +302,17 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, what string)
 // ---------------------------------------------------------------------------
 
 func TestLoopback(t *testing.T) {
-	m := New(Config{TopK: 1, Hysteresis: 250 * time.Millisecond, Logf: t.Logf})
+	// Logf is t.Logf behind a guard: peer connection state changes fire from
+	// pion goroutines and can land AFTER the test and its cleanups have
+	// completed — logging into a finished test panics the runner.
+	var logDone atomic.Bool
+	logf := func(format string, args ...any) {
+		if !logDone.Load() {
+			t.Logf(format, args...)
+		}
+	}
+	m := New(Config{TopK: 1, Hysteresis: 250 * time.Millisecond, Logf: logf})
+	t.Cleanup(func() { logDone.Store(true) }) // registered first -> runs last (LIFO), after all Leaves
 
 	A := newTestClient(t, m, "A")
 	B := newTestClient(t, m, "B")
@@ -258,21 +327,18 @@ func TestLoopback(t *testing.T) {
 	t.Logf("OK: subscriber offer = 20 pre-negotiated m-lines (12 audio + 6 camera + 2 screen)")
 	offersAtStart := B.subOffersSeen.Load()
 
-	// --- 2. Audio: A publishes, B receives via Top-K (K=1).
+	// --- 2. Publish EVERYTHING in A's FIRST offer: mic + camera (low/mid
+	// simulcast) + screen in one offer/answer round. PROTOCOL.md is a
+	// pre-negotiated design: the subscriber's 20 m-lines are offered up front
+	// AND the publisher offers all of its m-lines at once — no renegotiation
+	// on any connection. (Pion would tolerate publisher renegotiation too, but
+	// the protocol does not require it.)
 	audio, err := webrtc.NewTrackLocalStaticRTP(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2},
 		"audio", "mic-A")
 	if err != nil {
 		t.Fatal(err)
 	}
-	A.addTrackAndOffer(audio)
-	stopA := make(chan struct{})
-	writeFakeRTP(A, audio, 111, 0xA0000001, 480, stopA) // 10ms @ 48kHz
-
-	waitFor(t, 10*time.Second, func() bool { return B.receivedAudio.Load() > 0 }, "B receives A audio via Top-K")
-	t.Logf("OK: Top-K audio flows A -> SFU -> B (%d packets)", B.receivedAudio.Load())
-
-	// --- 3. Video: explicit subscribe, simulcast rung fallback + SetRung.
 	camLow, err := webrtc.NewTrackLocalStaticRTP(vp8Codec(), "camera", "camera-low")
 	if err != nil {
 		t.Fatal(err)
@@ -281,11 +347,28 @@ func TestLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	A.addTracksAndOffer(camLow, camMid)
+	screen, err := webrtc.NewTrackLocalStaticRTP(vp8Codec(), "screen", "screen-A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	A.addTracksAndOffer(audio, camLow, camMid, screen)
+	stopA := make(chan struct{})
 	stopCam := make(chan struct{})
+	stopScreen := make(chan struct{})
+	writeFakeRTP(A, audio, 111, 0xA0000001, 480, stopA) // 10ms @ 48kHz
 	writeFakeRTP(A, camLow, 96, 0xB0000001, 9000, stopCam)
 	writeFakeRTP(A, camMid, 96, 0xB0000002, 9000, stopCam)
+	writeFakeRTP(A, screen, 96, 0xC0000001, 9000, stopScreen)
 
+	// Audio via Top-K (K=1). This wait doubles as the registration barrier:
+	// all four tracks live in the same offer and their RTP starts at the same
+	// moment, and the Top-K audio path adds a 250ms hysteresis delay on top of
+	// registration — so when B hears audio, A's video/screen tracks are
+	// guaranteed registered and Subscribe below cannot race onTrack.
+	waitFor(t, 10*time.Second, func() bool { return B.receivedAudio.Load() > 0 }, "B receives A audio via Top-K")
+	t.Logf("OK: Top-K audio flows A -> SFU -> B (%d packets)", B.receivedAudio.Load())
+
+	// --- 3. Video: explicit subscribe, simulcast rung fallback + SetRung.
 	idx, err := m.Subscribe("B", "A", KindVideo)
 	if err != nil {
 		t.Fatalf("Subscribe video: %v", err)
@@ -311,15 +394,8 @@ func TestLoopback(t *testing.T) {
 	waitFor(t, 10*time.Second, func() bool { return B.receivedVideo.Load() > v2 }, "video still flows after SetRung(high) fallback")
 	t.Logf("OK: SetRung mid/high with fallback — video keeps flowing")
 
-	// --- 4. Screen: publish + subscribe; client picks, SFU forwards.
-	screen, err := webrtc.NewTrackLocalStaticRTP(vp8Codec(), "screen", "screen-A")
-	if err != nil {
-		t.Fatal(err)
-	}
-	A.addTrackAndOffer(screen)
-	stopScreen := make(chan struct{})
-	writeFakeRTP(A, screen, 96, 0xC0000001, 9000, stopScreen)
-
+	// --- 4. Screen: already published in offer 1; subscribe and the SFU
+	// forwards (client picks, SFU routes).
 	if _, err := m.Subscribe("B", "A", KindScreen); err != nil {
 		t.Fatalf("Subscribe screen: %v", err)
 	}

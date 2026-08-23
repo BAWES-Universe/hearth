@@ -109,9 +109,16 @@ func (s *Store) SeedDefaults() error {
 		return err
 	}
 	if n > 0 {
+		// Idempotent-ish: ensure town-square exists even if other spaces were
+		// created first (client default is town-square per config.ts).
+		var hasTown bool
+		_ = s.db.QueryRow(`SELECT COUNT(*) FROM spaces WHERE id='town-square'`).Scan(&hasTown)
+		if !hasTown {
+			return s.SaveWorld(defaultWorld("town-square", "Town Square"))
+		}
 		return nil
 	}
-	for _, w := range []*World{defaultWorld("hearth", "Hearth"), defaultWorld("garden", "Garden")} {
+	for _, w := range []*World{defaultWorld("hearth", "Hearth"), defaultWorld("garden", "Garden"), defaultWorld("town-square", "Town Square")} {
 		if err := s.SaveWorld(w); err != nil {
 			return err
 		}
