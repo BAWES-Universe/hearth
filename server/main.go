@@ -47,6 +47,15 @@ func main() {
 		log.Fatalf("migrate s1: %v", err)
 	}
 
+	// S9 Admin: operators + service tokens tables, then bootstrap the first
+	// operator from HEARTH_BOOTSTRAP_OPERATOR_KEY (first boot only).
+	if err := store.MigrateS9(); err != nil {
+		log.Fatalf("migrate s9: %v", err)
+	}
+	if err := store.BootstrapOperator(); err != nil {
+		log.Fatalf("bootstrap operator: %v", err)
+	}
+
 	hub := NewHub(store)
 	go hub.Run()
 	go hub.gravityCron() // nightly gravity recompute (design: nightly cron)
@@ -61,6 +70,7 @@ func main() {
 	mux.HandleFunc("/api/worlds", hub.handleWorlds)
 	mux.HandleFunc("/api/worlds/", hub.handleWorldRoute)
 	mux.HandleFunc("/ws", hub.handleWS)
+	hub.RegisterAdminRoutes(mux) // S9: /api/admin/* + embedded /admin console
 	mux.HandleFunc("/", serveClient)
 
 	srv := &http.Server{

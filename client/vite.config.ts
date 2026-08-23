@@ -1,6 +1,10 @@
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import preact from '@preact/preset-vite';
 import { VitePWA } from 'vite-plugin-pwa';
+
+const rootDir = fileURLToPath(new URL('.', import.meta.url));
 
 export default defineConfig({
   plugins: [
@@ -43,5 +47,13 @@ export default defineConfig({
     sourcemap: false,
     chunkSizeWarningLimit: 700,
     reportCompressedSize: true,
+    // multi-page: the game (index.html) + the embedded /admin console
+    // (admin.html, served by the Go binary at /admin).
+    rollupOptions: {
+      input: {
+        main: resolve(rootDir, 'index.html'),
+        admin: resolve(rootDir, 'admin.html'),
+      },
+    },
   },
 });
