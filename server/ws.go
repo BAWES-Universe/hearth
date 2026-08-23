@@ -340,6 +340,27 @@ func (c *Client) handleJoin(msg map[string]any) {
 	if e.Name == "" {
 		e.Name = "Guest-" + sess.ID[:4]
 	}
+	// Avatar: layered avatar_spec (validated + persisted per member) with
+	// legacy color/icon fallback for old clients. Incoming spec wins; else the
+	// member's stored spec; else a device-key default.
+	if a, ok := msg["avatar"].(map[string]any); ok {
+		if spec := parseAvatarSpec(a); spec != nil {
+			s := resolveAvatarSpec(sess.UserID, spec)
+			e.Avatar.Spec = &s
+		}
+		e.Avatar.Color = getString(a, "color")
+		e.Avatar.Icon = getString(a, "icon")
+	}
+	if e.Avatar.Spec == nil {
+		s := resolveAvatarSpec(sess.UserID, nil)
+		e.Avatar.Spec = &s
+	}
+	if e.Avatar.Color == "" {
+		e.Avatar.Color = defaultAvatarColor(e.Name)
+	}
+	if e.Avatar.Icon == "" {
+		e.Avatar.Icon = "🙂"
+	}
 	sp.AddEntity(e)
 	c.setEntity(e)
 	c.setSpace(spaceID)
@@ -353,12 +374,24 @@ func (c *Client) handleJoin(msg map[string]any) {
 	c.emit("welcome", map[string]any{
 		"sessionId": sess.ID, "selfId": e.ID, "entityId": e.ID,
 		"spaceId": spaceID, "name": e.Name, "x": e.X, "y": e.Y, "dir": e.Dir,
-		"world": sp.World.GeoJSON(),
+		"avatar": e.Avatar,
+		"world":  sp.World.GeoJSON(),
 	})
 	// gravity/audit: presence event (Reach = unique visitors)
 	c.hub.emitActivity(spaceID, sess.UserID, "member", "presence", "join", spaceID,
 		diffJSON(map[string]any{"name": e.Name, "x": e.X, "y": e.Y}), sanitizeIP(c.conn.RemoteAddr().String()))
 	log.Printf("join: %s (%s) -> %s @ %d,%d", e.Name, sess.ID[:8], spaceID, e.X, e.Y)
+}
+
+// defaultAvatarColor derives a stable accent from a name when the client did
+// not send one (mirrors the client's per-name tinting).
+func defaultAvatarColor(name string) string {
+	cols := []string{"#8b5cf6", "#22d3ee", "#f472b6", "#4ade80", "#fb923c", "#e879f9", "#60a5fa", "#facc15"}
+	h := 0
+	for i := 0; i < len(name); i++ {
+		h = (h*31 + int(name[i])) & 0x7fffffff
+	}
+	return cols[h%len(cols)]
 }
 
 func (c *Client) handleMove(msg map[string]any) {

@@ -3,6 +3,7 @@
 // client resyncs full state).
 
 import { env, type BotMsg, type ChatMsg, type EditMsg, type ErrMsg, type StateEntry, type Welcome } from './protocol';
+import type { AvatarInfo } from '../avatar/spec';
 
 export type NetStatus = 'connecting' | 'online' | 'reconnecting' | 'offline';
 
@@ -12,6 +13,7 @@ export interface JoinInfo {
   space: string;
   guest: boolean;
   deviceKey?: string;
+  avatar?: AvatarInfo;
 }
 
 export interface NetHandlers {

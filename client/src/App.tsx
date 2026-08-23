@@ -7,6 +7,7 @@ import { uuid } from './net/protocol';
 import { ChatSheet, type ChatMessage } from './ui/ChatSheet';
 import { Hud } from './ui/Hud';
 import { JoinScreen } from './ui/JoinScreen';
+import { loadSpec, type AvatarSpec } from './avatar/spec';
 
 type Phase = 'join' | 'loading' | 'world';
 
@@ -67,11 +68,12 @@ export function App() {
     };
   }, []);
 
-  const join = useCallback((name: string) => {
+  const join = useCallback((name: string, avatar?: AvatarSpec) => {
     const trimmed = name.trim() || 'guest';
     selfNameRef.current = trimmed;
     localStorage.setItem('hearth:name', trimmed);
     setPhase('loading');
+    const spec = avatar ?? loadSpec();
 
     void (async () => {
       // Resolve the space BEFORE connecting so a stale default (404) falls back
@@ -93,7 +95,7 @@ export function App() {
         const r = rendererRef.current;
         if (!r) return;
         if (d.world) r.setWorld(d.world);
-        r.setSelf(d.selfId, trimmed);
+        r.setSelf(d.selfId, trimmed, { spec });
         r.applyRoster(d.roster);
         const sp = d.space ?? d.spaceId;
         if (sp) setSpaceName(sp);
@@ -151,7 +153,7 @@ export function App() {
       },
     });
     netRef.current = net;
-    net.connect({ name: trimmed, lang: 'en', space, guest: true, deviceKey });
+    net.connect({ name: trimmed, lang: 'en', space, guest: true, deviceKey, avatar: { spec } });
 
     // early world fetch → tiles render before welcome arrives
     fetchSpace(space).then((sp) => {
