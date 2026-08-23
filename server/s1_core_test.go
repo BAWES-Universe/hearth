@@ -330,8 +330,8 @@ func TestPortalRoutingBlocksUnpublished(t *testing.T) {
 	if !portalTargetAllowed(h, draftID, meta.OwnerID) {
 		t.Error("portal to own draft blocked for owner")
 	}
-	if !portalTargetAllowed(h, "hearth", "") {
-		t.Error("portal to published hearth blocked")
+	if !portalTargetAllowed(h, "town-square", "") {
+		t.Error("portal to published town-square blocked")
 	}
 }
 

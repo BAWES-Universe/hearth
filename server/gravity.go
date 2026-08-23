@@ -124,14 +124,17 @@ func (s *Store) MigrateS1() error {
 		}
 	}
 	// Seed flags: town-square is the universal spawn (showcase+published);
-	// hearth/garden remain published so seed portals keep working.
+	// the showcase worlds (garden/lab/hall) are published so the directory
+	// lists them and seed portals keep working.
 	seeds := []struct {
 		id       string
 		showcase bool
 	}{
 		{"town-square", true},
 		{"hearth", false},
-		{"garden", false},
+		{"garden", true},
+		{"lab", true},
+		{"hall", true},
 	}
 	for _, sd := range seeds {
 		if err := s.ensureSeedFlags(sd.id, sd.showcase); err != nil {
