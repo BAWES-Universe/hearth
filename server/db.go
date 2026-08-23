@@ -155,9 +155,6 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (space_id, seq)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_op_log_space ON op_log(space_id)`,
-		// Agent-facing idempotency (docs/BOT-PROTOCOL.md): at most one op per
-		// (space, idempotency key). Partial index — humans send idem = ''.
-		`CREATE UNIQUE INDEX IF NOT EXISTS idx_op_log_idem ON op_log(space_id, idem) WHERE idem <> ''`,
 		// snapshots: full-world HMF dumps (written on publish; future
 		// templates/clones read from here).
 		`CREATE TABLE IF NOT EXISTS snapshots (
