@@ -174,19 +174,28 @@ func (b *mcpBackend) Chat(deviceKey, name, worldID, channel, text string) (mcp.C
 		}
 		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		var env struct {
-			T string         `json:"t"`
-			D map[string]any `json:"d"`
+			T string          `json:"t"`
+			D json.RawMessage `json:"d"`
 		}
 		if err := conn.ReadJSON(&env); err != nil {
 			return mcp.ChatResult{}, fmt.Errorf("chat read: %w", err)
 		}
-		switch env.T {
-		case "welcome":
-			selfID, _ = env.D["selfId"].(string)
-		case "error":
-			code, _ := env.D["code"].(string)
-			msg, _ := env.D["message"].(string)
-			return mcp.ChatResult{}, fmt.Errorf("chat join rejected: %s: %s", code, msg)
+		// The frozen state envelope carries d as an ARRAY (entity snapshots);
+		// only object-shaped envelopes (welcome/error) matter here. Decode
+		// lazily so a state frame mid-read can't fail the whole call.
+		if env.T == "welcome" || env.T == "error" {
+			var d map[string]any
+			if err := json.Unmarshal(env.D, &d); err != nil {
+				return mcp.ChatResult{}, fmt.Errorf("chat read: %s envelope: %w", env.T, err)
+			}
+			switch env.T {
+			case "welcome":
+				selfID, _ = d["selfId"].(string)
+			case "error":
+				code, _ := d["code"].(string)
+				msg, _ := d["message"].(string)
+				return mcp.ChatResult{}, fmt.Errorf("chat join rejected: %s: %s", code, msg)
+			}
 		}
 	}
 

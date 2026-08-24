@@ -121,6 +121,14 @@ func (c *Client) handleChat(msg map[string]any) {
 	if err := c.hub.store.InsertMessage(c.spaceID, c.Session.ID, c.Session.UserID, c.Entity.Name, channel, text); err != nil {
 		log.Printf("insert message: %v", err)
 	}
+	// Gravity/audit: chat is a Love contribution (world-local channels only —
+	// dm is a private peer channel and must not pump world gravity; the event
+	// row never carries the message text, just kind/action/target).
+	if channel != "dm" {
+		c.hub.emitActivity(c.spaceID, c.sessionUserID(), "member", "chat", channel, c.spaceID,
+			diffJSON(map[string]any{"from": c.Entity.ID, "len": len(text)}),
+			sanitizeIP(c.conn.RemoteAddr().String()))
+	}
 	log.Printf("chat[%s] %s: %.60s", channel, c.Entity.Name, text)
 }
 
@@ -226,6 +234,15 @@ func (c *Client) handleEdit(msg map[string]any) {
 		c.hub.emitActivity(sp.World.ID, op.Actor, "bot", "edit", op.Op, sp.World.ID,
 			diffJSON(map[string]any{
 				"seq": op.Seq, "idem": op.Idem,
+				"x": op.X, "y": op.Y, "tileId": op.TileID, "cells": len(op.Cells),
+			}),
+			sanitizeIP(c.conn.RemoteAddr().String()))
+	} else if c.Session != nil {
+		// Human edit: same append-only row, attributed to the session user
+		// (gravity Love contribution — edits count toward engagement).
+		c.hub.emitActivity(sp.World.ID, c.Session.UserID, "member", "edit", op.Op, sp.World.ID,
+			diffJSON(map[string]any{
+				"seq": op.Seq, "by": op.By,
 				"x": op.X, "y": op.Y, "tileId": op.TileID, "cells": len(op.Cells),
 			}),
 			sanitizeIP(c.conn.RemoteAddr().String()))

@@ -571,6 +571,14 @@ export function App() {
     if (view === 'worlds') void refreshWorlds(worldsQueryRef.current);
   }, [view, refreshWorlds]);
 
+  // live headcount: poll the directory while it's open so "N here" stays
+  // current from presence (gravity ranking refreshes server-side too).
+  useEffect(() => {
+    if (view !== 'worlds') return;
+    const iv = window.setInterval(() => void refreshWorlds(worldsQueryRef.current), 10000);
+    return () => window.clearInterval(iv);
+  }, [view, refreshWorlds]);
+
   const onSearch = useCallback((q: string) => {
     worldsQueryRef.current = q;
     void refreshWorlds(q);

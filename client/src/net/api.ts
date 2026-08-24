@@ -26,7 +26,8 @@ export interface WorldEntry {
   owner?: { id?: string; name?: string };
   headcount?: number;
   gravity?: { love?: number; reach?: number; momentum?: number; gravity?: number };
-  thumbnail?: unknown;
+  /** Server-rendered HMF v1 preview thumbnail URL (T2 directory gravity). */
+  thumbnail?: string | null;
 }
 
 /** GET /api/worlds — published worlds, gravity desc. */

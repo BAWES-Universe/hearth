@@ -4,15 +4,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { WorldEntry } from '../net/api';
 
-/** Deterministic gradient for the thumbnail placeholder (HMF render comes T2). */
-function thumbStyle(id: string): { background: string } {
-  let h = 0;
-  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) & 0x7fffffff;
-  const hues = ['260,70%', '190,65%', '330,65%', '150,55%', '25,70%', '280,60%'];
-  const [hue, sat] = hues[h % hues.length].split(',');
-  return { background: `linear-gradient(135deg, hsl(${hue}, ${sat}, 22%), hsl(${(h + 40) % 360}, ${sat}, 12%))` };
-}
-
 function fmtHeadcount(n: number | undefined): string {
   const v = n ?? 0;
   return v === 1 ? '1 here' : `${v} here`;
@@ -110,9 +101,15 @@ export function WorldsDirectory({
           const cur = w.id === currentId;
           return (
             <div key={w.id} class={`world-card${w.is_showcase ? ' showcase' : ''}${cur ? ' current' : ''}`}>
-              <div class="world-thumb" style={thumbStyle(w.id)} aria-hidden="true">
-                <span class="world-thumb-letter">{w.name.slice(0, 1).toUpperCase()}</span>
-                <span class="world-thumb-dots" />
+              <div class="world-thumb" aria-hidden="true">
+                {w.thumbnail ? (
+                  <img class="world-thumb-img" src={w.thumbnail} alt="" loading="lazy" />
+                ) : (
+                  <>
+                    <span class="world-thumb-letter">{w.name.slice(0, 1).toUpperCase()}</span>
+                    <span class="world-thumb-dots" />
+                  </>
+                )}
               </div>
               <div class="world-card-body">
                 <div class="world-card-name" title={w.name}>
