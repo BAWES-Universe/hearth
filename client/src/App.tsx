@@ -96,6 +96,9 @@ export function App() {
   const [portals, setPortals] = useState<PortalMarker[]>([]);
   const [teleporting, setTeleporting] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  const [mineCount, setMineCount] = useState(0);
+  /** One-time paint-mode onboarding bubble (dismissed → stored). */
+  const [paintTip, setPaintTip] = useState(() => localStorage.getItem('hearth:paint-tip') !== '1');
 
   const [worlds, setWorlds] = useState<WorldEntry[]>([]);
   const [worldsLoading, setWorldsLoading] = useState(false);
@@ -108,6 +111,8 @@ export function App() {
   const erasingRef = useRef(false);
   const portalsRef = useRef<PortalMarker[]>([]);
   const undoRef = useRef<UndoEntry[]>([]);
+  /** "x,y" tiles whose current state is a paint by the local player. */
+  const mineRef = useRef<Set<string>>(new Set());
   const skipRecordRef = useRef(false);
   const portalCooldownRef = useRef(0);
   const toastTimer = useRef<number | null>(null);
@@ -202,12 +207,33 @@ export function App() {
     setUndoCount(stack.length);
   }, []);
 
+  const syncMine = useCallback(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+    r.setMineTiles(mineRef.current);
+    setMineCount(mineRef.current.size);
+  }, []);
+
+  const resetMine = useCallback(() => {
+    mineRef.current = new Set();
+    syncMine();
+  }, [syncMine]);
+
   const onEdit = useCallback(
     (d: EditMsg) => {
       const r = rendererRef.current;
       if (!r) return;
       if (d.op !== 'portal' && typeof d.x === 'number' && typeof d.y === 'number' && typeof d.tileId === 'number') {
         r.paintTile(d.x, d.y, d.tileId);
+        // ownership: tiles whose current state is my last paint
+        const key = `${d.x},${d.y}`;
+        if (d.by === selfIdRef.current) {
+          if (d.op === 'erase' || d.tileId === 0) mineRef.current.delete(key);
+          else mineRef.current.add(key);
+        } else {
+          mineRef.current.delete(key); // someone else owns it now
+        }
+        syncMine();
       }
       if (d.op === 'portal') {
         if (d.portal) {
@@ -223,7 +249,7 @@ export function App() {
       }
       if (d.by && d.by === selfIdRef.current && d.applied) recordUndo(d);
     },
-    [recordUndo],
+    [recordUndo, syncMine],
   );
 
   const handlePortalMsg = useCallback(
@@ -239,6 +265,7 @@ export function App() {
           portalsRef.current = extractPortals(sp);
           setPortals(portalsRef.current);
           r?.setWorld(sp);
+          resetMine();
           const doc = sp as { isPublished?: boolean; isShowcase?: boolean };
           setIsPublished(doc.isPublished === true);
         }
@@ -258,7 +285,7 @@ export function App() {
         window.setTimeout(() => setTeleporting(false), 380);
       }
     },
-    [],
+    [resetMine],
   );
 
   const joinInto = useCallback(
@@ -277,6 +304,7 @@ export function App() {
             portalsRef.current = extractPortals(d.world);
             setPortals(portalsRef.current);
             r.setWorld(d.world);
+            resetMine();
             const doc = d.world as { isPublished?: boolean };
             setIsPublished(doc.isPublished === true);
           }
@@ -347,6 +375,7 @@ export function App() {
           portalsRef.current = extractPortals(w);
           setPortals(portalsRef.current);
           rendererRef.current?.setWorld(w);
+          resetMine();
           const doc = w as { isPublished?: boolean };
           setIsPublished(doc.isPublished === true);
         }
@@ -575,7 +604,28 @@ export function App() {
           publishing={publishing}
           onPublish={publish}
           online={status === 'online'}
+          mineCount={mineCount}
         />
+      )}
+
+      {/* paint-mode onboarding (one-time) */}
+      {inWorld && mode === 'paint' && paintTip && (
+        <div class="paint-tip" role="status">
+          <div class="paint-tip-title">🖌 Paint mode</div>
+          <p class="paint-tip-body">
+            Tap any tile to paint it with the selected brush. Your edits save live and are visible to
+            everyone — amber corner marks show tiles <em>you</em> painted.
+          </p>
+          <button
+            class="paint-tip-dismiss"
+            onClick={() => {
+              localStorage.setItem('hearth:paint-tip', '1');
+              setPaintTip(false);
+            }}
+          >
+            Got it
+          </button>
+        </div>
       )}
 
       {/* portal markers — world doc portals, projected onto the canvas */}
@@ -648,11 +698,14 @@ function PortalLayer({
     let raf = 0;
     const loop = () => {
       raf = requestAnimationFrame(loop);
+      // fade portal markers out when zoomed out to map-overview distance
+      const z = rendererRef.current?.getZoom() ?? 1;
+      if (wrapRef.current) wrapRef.current.style.opacity = z >= 0.4 ? '1' : '0.12';
       force((n) => n + 1);
     };
     loop();
     return () => cancelAnimationFrame(raf);
-  }, [portals]);
+  }, [portals, rendererRef]);
 
   const r = rendererRef.current;
   return (

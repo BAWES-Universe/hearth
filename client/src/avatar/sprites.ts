@@ -9,10 +9,15 @@ export const AV_PX = 128;
 /** Re-exported so renderers can style robot labels without importing spec.ts. */
 export { isRobotSpec };
 
+/** 4-frame walk bob heights (canvas px) — shared with renderers. */
+const WALK_BOB = [0, -8, -3, -8] as const;
+/** Lateral sway per walk frame so the step reads at small scale. */
+const WALK_SWAY = [0, 3, 0, -3] as const;
+
 export interface SpritePose {
   dir?: 'down' | 'up' | 'left' | 'right';
-  /** Walk bob frame: 0 = neutral, 1 = raised. */
-  phase?: 0 | 1;
+  /** Walk frame: 0 = neutral, 1 = stride up, 2 = passing, 3 = stride up. */
+  phase?: 0 | 1 | 2 | 3;
   /** Sit stub: body lowered + legs forward. */
   pose?: 'stand' | 'sit';
   /** Emote stub: wave raises an arm + a "!" bubble. */
@@ -417,8 +422,9 @@ function drawAccessory(
 
 /**
  * Renders the full layered spec onto a fresh canvas (AV_PX square, anchored
- * bottom-center). phase=1 raises the body (walk bob); pose 'sit' lowers and
- * squashes; emote 'wave' raises an arm + bubble.
+ * bottom-center). phase drives a 4-frame walk bob + lateral sway (shadow stays
+ * planted); pose 'sit' lowers and squashes; emote 'wave' raises an arm +
+ * bubble.
  */
 export function renderAvatarSpec(spec: AvatarSpec, pose: SpritePose = {}): HTMLCanvasElement {
   const c = document.createElement('canvas');
@@ -426,7 +432,9 @@ export function renderAvatarSpec(spec: AvatarSpec, pose: SpritePose = {}): HTMLC
   c.height = AV_PX;
   const ctx = c.getContext('2d')!;
   const dir: Dir = pose.dir ?? 'down';
-  const bob = pose.phase === 1 ? -5 : 0;
+  const ph = pose.phase ?? 0;
+  const bob = WALK_BOB[ph];
+  const sway = WALK_SWAY[ph];
   const sit = pose.pose === 'sit';
   const emote = pose.emote ?? 'none';
 
@@ -437,7 +445,7 @@ export function renderAvatarSpec(spec: AvatarSpec, pose: SpritePose = {}): HTMLC
   ctx.fill();
 
   ctx.save();
-  ctx.translate(0, bob + (sit ? 10 : 0));
+  ctx.translate(sway, bob + (sit ? 10 : 0));
 
   const g = bodyGeom(spec.body);
   if (sit) {

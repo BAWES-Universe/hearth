@@ -21,8 +21,8 @@ const PAINTABLE = Object.keys(TILE_DEFS)
 
 const MODE_HINT: Record<EditMode, string> = {
   play: 'Tap to move · pinch to zoom · drag to pan',
-  paint: 'Paint mode — tap the canvas to build. Edits save live.',
-  portal: 'Portal mode — tap a tile to drop a portal back to town-square.',
+  paint: 'Paint mode — tap tiles to build · edits save live for everyone',
+  portal: 'Portal mode — tap a tile to drop a portal back to town-square',
 };
 
 export function EditToolbar({
@@ -39,6 +39,7 @@ export function EditToolbar({
   publishing,
   onPublish,
   online,
+  mineCount,
 }: {
   mode: EditMode;
   onMode(m: EditMode): void;
@@ -53,6 +54,7 @@ export function EditToolbar({
   publishing: boolean;
   onPublish(): void;
   online: boolean;
+  mineCount: number;
 }) {
   const inEdit = mode !== 'play';
   return (
@@ -60,29 +62,38 @@ export function EditToolbar({
       {inEdit && (
         <div class="edit-tools">
           {mode === 'paint' && (
-            <div class="palette-row">
-              <button
-                class={`swatch eraser${erasing ? ' active' : ''}`}
-                onClick={() => onErasing(!erasing)}
-                title="Eraser — remove a tile"
-                aria-label="Eraser tool"
-              >
-                ✕
-              </button>
-              {PAINTABLE.map((id) => (
+            <>
+              <div class="palette-row">
                 <button
-                  key={id}
-                  class={`swatch${!erasing && brush === id ? ' active' : ''}`}
-                  style={{ background: SWATCH[id] }}
-                  onClick={() => {
-                    onErasing(false);
-                    onBrush(id);
-                  }}
-                  title={TILE_DEFS[id].name}
-                  aria-label={`Paint ${TILE_DEFS[id].name}`}
-                />
-              ))}
-            </div>
+                  class={`swatch eraser${erasing ? ' active' : ''}`}
+                  onClick={() => onErasing(!erasing)}
+                  title="Eraser — remove a tile"
+                  aria-label="Eraser tool"
+                >
+                  ✕
+                </button>
+                {PAINTABLE.map((id) => (
+                  <button
+                    key={id}
+                    class={`swatch${!erasing && brush === id ? ' active' : ''}`}
+                    style={{ background: SWATCH[id] }}
+                    onClick={() => {
+                      onErasing(false);
+                      onBrush(id);
+                    }}
+                    title={TILE_DEFS[id].name}
+                    aria-label={`Paint ${TILE_DEFS[id].name}`}
+                  />
+                ))}
+              </div>
+              <div class="paint-how">
+                <span class="mine-count">
+                  <span class="mine-dot" aria-hidden="true" /> you painted {mineCount}{' '}
+                  {mineCount === 1 ? 'tile' : 'tiles'} here
+                </span>
+                <span class="paint-how-text">tap tiles to paint · edits save live for everyone</span>
+              </div>
+            </>
           )}
           {mode === 'portal' && (
             <div class="portal-hint">↓ portal target: town-square (16, 16)</div>

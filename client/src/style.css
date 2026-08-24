@@ -43,6 +43,16 @@ body {
   background: var(--bg);
 }
 
+/* Critical for tap-to-move on touch: without this the browser hijacks taps
+   for scroll/double-tap-zoom and pointerup/pointercancel never land on the
+   renderer's gesture logic. (Also set inline by the renderer; belt + braces.) */
+.world-mount canvas {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
 /* ------------------------------------------------------------ join screen */
 
 .join {
@@ -656,11 +666,12 @@ body {
   text-overflow: ellipsis;
 }
 
-/* editor tap-capture overlay — sits above the canvas, below the toolbar */
+/* editor tap-capture overlay — sits above the canvas, below the FAB/dock so
+   chat stays reachable while painting */
 .editor-overlay {
   position: absolute;
   inset: 0;
-  z-index: 13;
+  z-index: 11;
   cursor: crosshair;
   background: rgba(139, 92, 246, 0.045);
 }
@@ -1052,4 +1063,132 @@ body {
   display: flex;
   gap: 10px;
   justify-content: flex-end;
+}
+
+/* ------------------------------------------------------------ paint-mode UX */
+
+/* ownership counter + how-it-works line under the palette */
+.paint-how {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  font-size: 11px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  backdrop-filter: blur(10px);
+  white-space: nowrap;
+  max-width: calc(100vw - 24px);
+}
+
+.mine-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--amber);
+  font-weight: 700;
+}
+
+.mine-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--amber);
+  box-shadow: 0 0 6px rgba(245, 158, 11, 0.7);
+}
+
+.paint-how-text {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* one-time paint-mode onboarding bubble */
+.paint-tip {
+  position: absolute;
+  bottom: calc(236px + var(--safe-b));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 16;
+  width: min(88vw, 340px);
+  padding: 14px 16px;
+  background: var(--panel);
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  border-radius: 16px;
+  backdrop-filter: blur(12px);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.55);
+  animation: toast-in 0.2s ease-out;
+}
+
+.paint-tip-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--amber);
+  margin-bottom: 4px;
+}
+
+.paint-tip-body {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.paint-tip-body em {
+  color: var(--amber);
+  font-style: normal;
+  font-weight: 700;
+}
+
+.paint-tip-dismiss {
+  width: 100%;
+  height: 40px;
+  font-size: 14px;
+  font-weight: 800;
+  color: #14101f;
+  background: linear-gradient(100deg, var(--purple-soft), var(--amber));
+  border: none;
+  border-radius: 12px;
+  cursor: pointer;
+}
+
+/* ------------------------------------------------------------ mobile tweaks */
+
+@media (max-width: 480px) {
+  /* join screen: scroll instead of clipping the avatar builder off-screen */
+  .join {
+    align-items: flex-start;
+    justify-content: flex-start;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    padding: 20px 16px calc(24px + var(--safe-b));
+  }
+  .join-card {
+    max-width: 100%;
+    padding: 24px 18px 20px;
+  }
+
+  /* avatar builder: stack preview above options, auto-fill grid, wrap presets */
+  .avatar-builder .ab-row {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+  .avatar-builder .ab-preview {
+    width: 72px !important;
+    height: 72px !important;
+    align-self: center;
+  }
+  .avatar-builder .ab-options {
+    grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)) !important;
+  }
+  .avatar-builder .ab-presets {
+    flex-wrap: wrap !important;
+  }
+
+  .paint-tip {
+    bottom: calc(258px + var(--safe-b));
+    width: min(92vw, 320px);
+  }
 }
