@@ -13,3 +13,5 @@ hearth
 *.pat
 .env
 or_key.txt
+# local deploy helper (machine-specific paths) — never commit
+ssh-config

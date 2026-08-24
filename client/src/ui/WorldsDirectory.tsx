@@ -41,12 +41,13 @@ export function WorldsDirectory({
   currentId: string | null;
   onBack(): void;
   onJoin(id: string): void;
-  onCreate(name: string): void;
+  onCreate(name: string, template?: string): void;
   onSearch(q: string): void;
 }) {
   const [query, setQuery] = useState('');
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState('');
+  const [template, setTemplate] = useState('empty_lot');
   const searchTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -61,6 +62,7 @@ export function WorldsDirectory({
   useEffect(() => {
     if (showNew) {
       setName('');
+      setTemplate('empty_lot');
       const el = document.getElementById('new-world-name');
       if (el) window.setTimeout(() => el.focus(), 50);
     }
@@ -73,8 +75,15 @@ export function WorldsDirectory({
     const n = name.trim();
     if (!n) return;
     setShowNew(false);
-    onCreate(n);
+    onCreate(n, template);
   };
+
+  /** World-creation templates (server-seeded — no random walls). */
+  const TEMPLATES: { id: string; label: string; desc: string; icon: string }[] = [
+    { id: 'empty_lot', label: 'Empty Lot', desc: 'open field · paint from scratch', icon: '🌱' },
+    { id: 'cozy_room', label: 'Cozy Room', desc: 'walled room · door + fireplace', icon: '🛋️' },
+    { id: 'plaza', label: 'Plaza', desc: 'stone square · fountain center', icon: '⛲' },
+  ];
 
   return (
     <div class="directory" role="region" aria-label="Worlds directory">
@@ -154,7 +163,23 @@ export function WorldsDirectory({
         <div class="modal-wrap" onClick={() => setShowNew(false)} role="dialog" aria-modal="true" aria-label="New world">
           <form class="modal" onSubmit={submit} onClick={(e) => e.stopPropagation()}>
             <h2>New World</h2>
-            <p class="modal-sub">A blank 24×24 canvas. Paint a few tiles, drop a portal back to town-square, then publish — under a minute.</p>
+            <p class="modal-sub">Pick a template, then paint, drop a portal back to town-square, and publish — under a minute.</p>
+            <div class="template-row" role="radiogroup" aria-label="World template">
+              {TEMPLATES.map((t) => (
+                <button
+                  type="button"
+                  key={t.id}
+                  role="radio"
+                  aria-checked={template === t.id}
+                  class={`template-card${template === t.id ? ' active' : ''}`}
+                  onClick={() => setTemplate(t.id)}
+                >
+                  <span class="template-icon">{t.icon}</span>
+                  <span class="template-label">{t.label}</span>
+                  <span class="template-desc">{t.desc}</span>
+                </button>
+              ))}
+            </div>
             <input
               id="new-world-name"
               class="modal-input"

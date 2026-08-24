@@ -105,7 +105,7 @@ export interface PortalPayload {
   targetY: number;
 }
 
-/** Outbound editor op (frozen HMF v1 ops: paint|erase|place|zone|portal|publish). */
+/** Outbound editor op (frozen HMF v1 ops: paint|erase|place|zone|portal|object|publish). */
 export interface EditOut {
   op: string;
   x?: number;
@@ -113,6 +113,8 @@ export interface EditOut {
   tileId?: number;
   portal?: PortalPayload;
   portalId?: string;
+  object?: ObjectPayload;
+  objectId?: string;
 }
 
 /** Server ack for a portal walk-through: swap to spaceId at (x, y). */

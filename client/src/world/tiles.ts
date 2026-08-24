@@ -40,95 +40,192 @@ function mulberry32(seed: number): () => number {
   };
 }
 
-function makeTex(size: number, paint: (ctx: CanvasRenderingContext2D, rnd: () => number) => void): Texture {
+function makeTex(
+  size: number,
+  paint: (ctx: CanvasRenderingContext2D, rnd: () => number, seed: number) => void,
+  seedExtra = 0,
+): Texture {
   const c = document.createElement('canvas');
   c.width = size;
   c.height = size;
   const ctx = c.getContext('2d')!;
-  paint(ctx, mulberry32((size * 9301 + 49297) >>> 0));
+  paint(ctx, mulberry32(((size * 9301 + 49297) ^ (seedExtra * 2654435761)) >>> 0), seedExtra);
   return Texture.from(c);
 }
 
-/** Build the small tile atlas: one shared Texture per tileId (32x32). */
+/**
+ * Build the tile atlas: 3 deterministic variants per tileId (32x32 each),
+ * keyed `tileId * VARIANTS + variant`. Variant is chosen per cell by
+ * `variant = (x*31 + y*17) % 3` — periodic with period 3 in both axes, so a
+ * 3x3 repeat pattern of the floor texture matches the formula exactly.
+ * Dusk/ember palette per the visual system (§2/§3), warm 1px top edge.
+ */
+export const VARIANTS = 3;
+
+/** Warm top edge every tile catches — "wet cobbles catching amber light". */
+const WARM_EDGE = 'rgba(255,196,107,0.10)';
+
+const PAL = {
+  floor: '#241633',
+  floorLight: '#2c1c3f',
+  floorDark: '#1c1229',
+  wall: '#2a2040',
+  wallTop: '#3d3059',
+  wallDark: '#211836',
+  water: '#1c2f52',
+  waterHi: '#5a7fae',
+  grass: '#2e4a35',
+  grassHi: '#4a6b45',
+  grassDark: '#223a28',
+  stone: '#3a3040',
+  stoneDark: '#2e2633',
+};
+
+/** Deterministic variant texture key: `tileId*VARIANTS + variant`. */
+export function texKey(tileId: number, variant: number): number {
+  return tileId * VARIANTS + (variant % VARIANTS);
+}
+
+/** Deterministic per-cell variant: (x*31 + y*17) % 3. */
+export function tileVariant(x: number, y: number): number {
+  return ((x * 31 + y * 17) % VARIANTS + VARIANTS) % VARIANTS;
+}
+
+/** Jittered speckle: lighter/darker dither (~±8% tone) for hand-made feel. */
+function speckle(ctx: CanvasRenderingContext2D, rnd: () => number, tones: string[], n: number): void {
+  for (let i = 0; i < n; i++) {
+    ctx.fillStyle = tones[(rnd() * tones.length) | 0];
+    ctx.fillRect((rnd() * TILE) | 0, (rnd() * TILE) | 0, 2, 2);
+  }
+}
+
 export function generateTileTextures(): Record<number, Texture> {
   const S = TILE;
   const tex: Record<number, Texture> = {};
 
-  tex[0] = makeTex(S, (ctx, rnd) => {
-    // floor — dark purple slab with faint speckle
-    ctx.fillStyle = '#241b33';
-    ctx.fillRect(0, 0, S, S);
-    for (let i = 0; i < 6; i++) {
-      ctx.fillStyle = '#2c2140';
-      ctx.fillRect((rnd() * S) | 0, (rnd() * S) | 0, 2, 2);
-    }
-    ctx.fillStyle = 'rgba(0,0,0,0.25)';
-    ctx.fillRect(0, S - 1, S, 1);
-  });
+  for (let v = 0; v < VARIANTS; v++) {
+    const vShift = (v - 1) * 6; // ±6 lightness drift per variant
 
-  tex[1] = makeTex(S, (ctx) => {
-    // wall — raised block with highlight lip + brick joints
-    ctx.fillStyle = '#3b3154';
-    ctx.fillRect(0, 0, S, S);
-    ctx.fillStyle = '#554a78';
-    ctx.fillRect(0, 0, S, 4);
-    ctx.fillStyle = '#2a2240';
-    ctx.fillRect(0, S - 3, S, 3);
-    ctx.fillStyle = 'rgba(255,255,255,0.06)';
-    ctx.fillRect(0, 4, S, 1);
-    ctx.fillStyle = 'rgba(0,0,0,0.18)';
-    ctx.fillRect(8, 10, 1, 12);
-    ctx.fillRect(20, 14, 1, 12);
-    ctx.fillRect(0, 14, S, 1);
-  });
+    // wall — raised block, warm lip, brick joints shifted per variant
+    tex[texKey(1, v)] = makeTex(S, (ctx, rnd) => {
+      ctx.fillStyle = shade(PAL.wall, vShift);
+      ctx.fillRect(0, 0, S, S);
+      ctx.fillStyle = shade(PAL.wallTop, vShift);
+      ctx.fillRect(0, 0, S, 4);
+      ctx.fillStyle = shade(PAL.wallDark, vShift);
+      ctx.fillRect(0, S - 3, S, 3);
+      ctx.fillStyle = 'rgba(255,255,255,0.05)';
+      ctx.fillRect(0, 4, S, 1);
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      const jx = v * 5;
+      ctx.fillRect(8 + jx, 10, 1, 10);
+      ctx.fillRect(20 - jx, 14, 1, 10);
+      ctx.fillRect((v * 9) % S, 18, S, 1);
+      speckle(ctx, rnd, ['rgba(255,196,107,0.05)', 'rgba(0,0,0,0.12)'], 4);
+    });
 
-  tex[2] = makeTex(S, (ctx) => {
-    // water — deep blue with animated-looking wave arcs
-    ctx.fillStyle = '#16304e';
-    ctx.fillRect(0, 0, S, S);
-    ctx.strokeStyle = 'rgba(120,180,230,0.5)';
-    ctx.lineWidth = 1.5;
-    for (let i = 0; i < 3; i++) {
-      const y = 8 + i * 9;
+    // water — deep dusk blue, wave arcs phase-shifted per variant
+    tex[texKey(2, v)] = makeTex(S, (ctx, rnd) => {
+      ctx.fillStyle = shade(PAL.water, vShift);
+      ctx.fillRect(0, 0, S, S);
+      ctx.strokeStyle = 'rgba(90,127,174,0.55)';
+      ctx.lineWidth = 1.5;
+      const ph = v * 5;
+      for (let i = 0; i < 3; i++) {
+        const y = 8 + i * 9;
+        ctx.beginPath();
+        ctx.moveTo(3, y + ph - 3);
+        ctx.quadraticCurveTo(10, y + ph - 6, 17, y + ph - 3);
+        ctx.quadraticCurveTo(24, y + ph, 30, y + ph - 3);
+        ctx.stroke();
+      }
+      speckle(ctx, rnd, ['rgba(90,127,174,0.12)', 'rgba(0,0,0,0.2)'], 5);
+    });
+
+    // grass — dusk green with lighter blades
+    tex[texKey(3, v)] = makeTex(S, (ctx, rnd) => {
+      ctx.fillStyle = shade(PAL.grass, vShift);
+      ctx.fillRect(0, 0, S, S);
+      speckle(ctx, rnd, [PAL.grassHi, PAL.grass, PAL.grassDark], 10);
+      ctx.fillStyle = 'rgba(122,196,110,0.14)';
+      const bx = v * 7;
+      ctx.fillRect(4 + bx, 6, 2, 4);
+      ctx.fillRect(18 - bx, 16, 2, 4);
+      ctx.fillRect(26, 24 + (v % 2) * 3, 2, 4);
+    });
+
+    // stone — slate with cracked joints
+    tex[texKey(4, v)] = makeTex(S, (ctx, rnd) => {
+      ctx.fillStyle = shade(PAL.stone, vShift);
+      ctx.fillRect(0, 0, S, S);
+      ctx.strokeStyle = 'rgba(0,0,0,0.38)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(1.5, 1.5, S - 3, S - 3);
+      ctx.fillStyle = 'rgba(255,255,255,0.06)';
+      ctx.fillRect(3 + v * 3, 3, 7, 2);
+      ctx.strokeStyle = 'rgba(0,0,0,0.25)';
       ctx.beginPath();
-      ctx.moveTo(3, y);
-      ctx.quadraticCurveTo(10, y - 3, 17, y);
-      ctx.quadraticCurveTo(24, y + 3, 30, y);
+      ctx.moveTo(6 + v * 4, 14);
+      ctx.lineTo(12 + v * 3, 20);
       ctx.stroke();
-    }
-  });
+      speckle(ctx, rnd, ['rgba(255,255,255,0.05)', 'rgba(0,0,0,0.15)'], 4);
+    });
 
-  tex[3] = makeTex(S, (ctx, rnd) => {
-    // grass
-    ctx.fillStyle = '#1f331d';
-    ctx.fillRect(0, 0, S, S);
-    for (let i = 0; i < 10; i++) {
-      ctx.fillStyle = rnd() > 0.5 ? '#2a4226' : '#182a17';
-      ctx.fillRect((rnd() * S) | 0, (rnd() * S) | 0, 2, 2);
-    }
-  });
-
-  tex[4] = makeTex(S, (ctx) => {
-    // stone
-    ctx.fillStyle = '#2e2b3a';
-    ctx.fillRect(0, 0, S, S);
-    ctx.strokeStyle = 'rgba(0,0,0,0.4)';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(1.5, 1.5, S - 3, S - 3);
-    ctx.fillStyle = 'rgba(255,255,255,0.05)';
-    ctx.fillRect(3, 3, 8, 3);
-  });
-
-  tex[99] = makeTex(S, (ctx) => {
-    // unknown tileId — hot pink checker so mismatches are obvious
-    ctx.fillStyle = '#330011';
-    ctx.fillRect(0, 0, S, S);
-    ctx.fillStyle = '#ff00aa';
-    ctx.fillRect(0, 0, S / 2, S / 2);
-    ctx.fillRect(S / 2, S / 2, S / 2, S / 2);
-  });
+    // unknown tileId — keep the hot-pink checker (obvious mismatch), 3 tints
+    tex[texKey(99, v)] = makeTex(S, (ctx) => {
+      ctx.fillStyle = '#330011';
+      ctx.fillRect(0, 0, S, S);
+      ctx.fillStyle = v === 1 ? '#ff00aa' : v === 2 ? '#ff55cc' : '#cc0088';
+      ctx.fillRect(0, 0, S / 2, S / 2);
+      ctx.fillRect(S / 2, S / 2, S / 2, S / 2);
+    });
+  }
 
   return tex;
+}
+
+/**
+ * Floor is implicit in the sparse wire format, so it renders as one repeating
+ * 3x3-cell pattern (96x96) that exactly matches the per-cell variant formula
+ * (period 3 in both axes). Warm top edge + ±8% dither per cell.
+ */
+export function generateFloorTexture(): Texture {
+  const c = document.createElement('canvas');
+  c.width = TILE * VARIANTS;
+  c.height = TILE * VARIANTS;
+  const ctx = c.getContext('2d')!;
+  for (let cy = 0; cy < VARIANTS; cy++) {
+    for (let cx = 0; cx < VARIANTS; cx++) {
+      const v = tileVariant(cx, cy);
+      const vShift = (v - 1) * 6;
+      const x = cx * TILE;
+      const y = cy * TILE;
+      ctx.fillStyle = shade(PAL.floor, vShift);
+      ctx.fillRect(x, y, TILE, TILE);
+      const rnd = mulberry32((x * 9301 + y * 49297 + 11) >>> 0);
+      speckle(ctx, rnd, [PAL.floorLight, PAL.floor, PAL.floorDark], 6);
+      ctx.fillStyle = WARM_EDGE;
+      ctx.fillRect(x, y, TILE, 1);
+      ctx.fillStyle = 'rgba(0,0,0,0.22)';
+      ctx.fillRect(x, y + TILE - 1, TILE, 1);
+    }
+  }
+  const tex = Texture.from(c);
+  tex.source.style.addressMode = 'repeat';
+  return tex;
+}
+
+/** Simple hex shade shift (can be negative/positive, clamped). */
+function shade(hex: string, delta: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  const r = clamp8(((n >> 16) & 0xff) + delta);
+  const g = clamp8(((n >> 8) & 0xff) + delta);
+  const b = clamp8((n & 0xff) + delta);
+  return `rgb(${r},${g},${b})`;
+}
+
+function clamp8(v: number): number {
+  return v < 0 ? 0 : v > 255 ? 255 : v;
 }
 
 /**
