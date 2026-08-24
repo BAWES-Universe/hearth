@@ -72,14 +72,14 @@ const waitFor = (ws, predicate, what, ms = 8000) =>
 
 (async () => {
   const tag = Date.now();
-  const a = await guest('t2-a-' + tag, 'T2Alice');
-  const b = await guest('t2-b-' + tag, 'T2Bob');
+  const a = await guest('t2-a-' + tag, 'T2Alice-' + tag);
+  const b = await guest('t2-b-' + tag, 'T2Bob-' + tag);
   check('guest auth A', !!a.sessionId && !!a.cookie);
   check('guest auth B', !!b.sessionId && !!b.cookie);
 
-  // find Bob by name
-  const search = await rest(a.cookie, '/api/users?q=' + encodeURIComponent('T2Bob'));
-  const bob = (search.body.users || []).find((u) => u.name === 'T2Bob');
+  // find Bob by name (unique per run — a shared live DB accumulates users)
+  const search = await rest(a.cookie, '/api/users?q=' + encodeURIComponent('T2Bob-' + tag));
+  const bob = (search.body.users || []).find((u) => u.name === 'T2Bob-' + tag);
   check('user search finds T2Bob', !!bob, JSON.stringify(search.body));
 
   // A -> B request
@@ -95,20 +95,26 @@ const waitFor = (ws, predicate, what, ms = 8000) =>
 
   // A connects first (will receive the accept + presence events)
   let aliceWS;
-  try { aliceWS = await wsJoin('t2-a-' + tag, 'T2Alice'); } catch (e) { check('A WS join', false, e.message); }
+  try { aliceWS = await wsJoin('t2-a-' + tag, 'T2Alice-' + tag); } catch (e) { check('A WS join', false, e.message); }
   check('A WS join', !!aliceWS);
 
   // B accepts -> A gets {t:'friend', event:'accept'}
+  // (attach the waiter BEFORE the triggering REST call — the server emits
+  // synchronously during the handler, so the event can beat the listener)
+  const friendEvtP = waitFor(aliceWS, (j) => j.t === 'friend' && j.d?.event === 'accept' && j.d?.userId === b.userId, 'friend accept event');
   const acc = await rest(b.cookie, '/api/friends/' + a.userId + '/accept', { method: 'POST' });
   check('accept ok', acc.code === 200 && acc.body.ok === true, JSON.stringify(acc.body));
-  const friendEvt = await waitFor(aliceWS, (j) => j.t === 'friend' && j.d?.event === 'accept' && j.d?.userId === b.userId, 'friend accept event');
+  const friendEvt = await friendEvtP;
   check('friend accept event delivered to A', friendEvt.d.status === 'accepted');
 
   // B joins town-square -> A gets {t:'friend_presence', event:'join'}
+  // (attach the waiter before dialing B — the event is emitted right after
+  // B's welcome)
+  const presEvtP = waitFor(aliceWS, (j) => j.t === 'friend_presence' && j.d?.event === 'join' && j.d?.userId === b.userId, 'presence join event');
   let bobWS;
-  try { bobWS = await wsJoin('t2-b-' + tag, 'T2Bob'); } catch (e) { check('B WS join', false, e.message); }
+  try { bobWS = await wsJoin('t2-b-' + tag, 'T2Bob-' + tag); } catch (e) { check('B WS join', false, e.message); }
   check('B WS join', !!bobWS);
-  const presEvt = await waitFor(aliceWS, (j) => j.t === 'friend_presence' && j.d?.event === 'join' && j.d?.userId === b.userId, 'presence join event');
+  const presEvt = await presEvtP;
   check('presence join event delivered to A', presEvt.d.online === true && !!presEvt.d.spaceId, JSON.stringify(presEvt.d));
 
   // A's list shows B online in town-square
@@ -116,9 +122,10 @@ const waitFor = (ws, predicate, what, ms = 8000) =>
   const aRow = (aList.body.friends || []).find((f) => f.friendId === b.userId);
   check('A list shows B online', !!aRow && aRow.online === true && aRow.space === 'town-square', JSON.stringify(aList.body));
 
-  // B disconnects -> A gets offline event
+  // B disconnects -> A gets offline event (attach waiter before closing)
+  const offEvtP = waitFor(aliceWS, (j) => j.t === 'friend_presence' && j.d?.event === 'offline' && j.d?.userId === b.userId, 'offline event');
   bobWS.close();
-  const offEvt = await waitFor(aliceWS, (j) => j.t === 'friend_presence' && j.d?.event === 'offline' && j.d?.userId === b.userId, 'offline event');
+  const offEvt = await offEvtP;
   check('offline event delivered to A', offEvt.d.online === false, JSON.stringify(offEvt.d));
 
   aliceWS.close();
