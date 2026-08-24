@@ -91,10 +91,10 @@ func main() {
 	mux.HandleFunc("/api/blocks/", hub.handleBlockRoute)
 	// BYOK (Bring Your Own Key): users paste their own OpenRouter key; the
 	// server stores only a fingerprint (see server/byok.go — Ox-decided).
-	mux.HandleFunc("/api/byok", hub.handleByok)          // POST upsert+validate, GET status, DELETE revoke
-	mux.HandleFunc("/api/byok/status", hub.handleByok)   // GET key presence
+	mux.HandleFunc("/api/byok", hub.handleByok)              // POST upsert+validate, GET status, DELETE revoke
+	mux.HandleFunc("/api/byok/status", hub.handleByok)       // GET key presence
 	mux.HandleFunc("/api/byok/contribution", hub.handleByok) // GET per-key impact
-	mux.HandleFunc("/api/byok/use", hub.byokUse)         // POST agent-integration proxy (in-memory key)
+	mux.HandleFunc("/api/byok/use", hub.byokUse)             // POST agent-integration proxy (in-memory key)
 	// T2 avatars: upload / list / sets / scopes / grants (avatars_t2.go).
 	mux.HandleFunc("/api/avatars/", hub.handleAvatars)
 	mux.HandleFunc("/ws", hub.handleWS)

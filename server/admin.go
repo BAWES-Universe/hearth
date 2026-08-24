@@ -531,10 +531,10 @@ func (h *Hub) adminWorldGet(w http.ResponseWriter, r *http.Request, id string) {
 // step). Audited.
 func (h *Hub) adminWorldsCreate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name   string `json:"name"`
-		Width  int    `json:"width"`
-		Height int    `json:"height"`
-		Publish bool  `json:"publish"`
+		Name    string `json:"name"`
+		Width   int    `json:"width"`
+		Height  int    `json:"height"`
+		Publish bool   `json:"publish"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "bad JSON"})

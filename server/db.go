@@ -272,7 +272,7 @@ func (s *Store) migrate() error {
 			claim_value TEXT NOT NULL,
 			PRIMARY KEY (user_id, claim_type, claim_value)
 		)`,
-		}
+	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("migrate: %w", err)

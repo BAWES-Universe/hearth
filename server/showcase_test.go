@@ -108,12 +108,12 @@ func mustEncodeChunk(t *testing.T, w *World, cx, cy int) string {
 // chunk and for a pathological all-floor chunk.
 func TestRLERoundTrip(t *testing.T) {
 	cases := []string{
-		"",                       // all floor
-		"0:256",                  // explicit all floor
-		"1:256",                  // all wall
-		"0:1,1:1,0:1,1:1,0:252",  // alternating
-		"1:4,3:12,0:240",         // mixed
-		"0:255,19:1",             // single dirt at the end
+		"",                      // all floor
+		"0:256",                 // explicit all floor
+		"1:256",                 // all wall
+		"0:1,1:1,0:1,1:1,0:252", // alternating
+		"1:4,3:12,0:240",        // mixed
+		"0:255,19:1",            // single dirt at the end
 	}
 	for _, c := range cases {
 		grid, err := hmf.DecodeRLE(c)

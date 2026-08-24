@@ -251,7 +251,7 @@ func (s *Store) PublishWorld(id string) (WorldMeta, error) {
 	return s.worldMeta(id)
 }
 
-// userDisplay returns a stable display name for a user id ('' when unknown).
+// userDisplay returns a stable display name for a user id (” when unknown).
 func (s *Store) userDisplay(userID string) string {
 	if userID == "" {
 		return ""
@@ -305,13 +305,20 @@ func (s *Store) loadActivityRows() ([]activityRow, error) {
 // computeGravityFor returns (love, reach, momentum, gravity) for one world.
 //
 // Love     = sum of contributions with a per-day cap per actor
-//            (max gravityPerDayCap contribution events per actor/world/day).
+//
+//	(max gravityPerDayCap contribution events per actor/world/day).
+//
 // Reach    = audience: distinct visitors in the lookback window (join events,
-//            unique actor) — loadActivityRows bounds the scan to the window.
+//
+//	unique actor) — loadActivityRows bounds the scan to the window.
+//
 // Momentum = recency: sum of 2^(-ageDays/14) over events in the lookback
-//            window (14-day half-life).
+//
+//	window (14-day half-life).
+//
 // Gravity  = (1+Love) * (1+Reach) * (1+Momentum) — monotone in every factor,
-//            never zero, fully deterministic for identical inputs.
+//
+//	never zero, fully deterministic for identical inputs.
 func computeGravityFor(rows []activityRow, now time.Time) (love, reach, momentum, gravity float64) {
 	// love: per (actor, day) capped counts
 	perActorDay := map[string]int{}
@@ -472,7 +479,7 @@ func (h *Hub) emitActivity(worldID, actor, role, kind, action, target, diff, ip 
 	}
 }
 
-// diffJSON builds a compact JSON diff string for the audit log ('' on error).
+// diffJSON builds a compact JSON diff string for the audit log (” on error).
 func diffJSON(v any) string {
 	b, err := json.Marshal(v)
 	if err != nil {

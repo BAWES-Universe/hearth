@@ -9,10 +9,10 @@ import (
 )
 
 const (
-	cellSize       = 8               // 8x8 spatial hash cells
-	aoiRadius      = 20              // area-of-interest radius in tiles
+	cellSize       = 8                // 8x8 spatial hash cells
+	aoiRadius      = 20               // area-of-interest radius in tiles
 	tickInterval   = time.Second / 12 // 12Hz coalesced state broadcast
-	stateHeartbeat = time.Second     // force a state at least 1/s even if unchanged
+	stateHeartbeat = time.Second      // force a state at least 1/s even if unchanged
 	botMoveEvery   = 2 * time.Second
 	sendQueueSize  = 256
 	botsPerSpace   = 2
@@ -327,22 +327,22 @@ type Hub struct {
 	// so a reconnect resend (or a retry) of the same nonce within the 30s
 	// TTL cannot double-broadcast or double-insert. Pruned lazily on access.
 	recentNonces map[string]map[string]time.Time
-	avatarReg    *AvatarRegistry   // T2 avatar governance snapshot (avatars_t2.go)
+	avatarReg    *AvatarRegistry // T2 avatar governance snapshot (avatars_t2.go)
 }
 
 func NewHub(store *Store) *Hub {
 	h := &Hub{
-		store:      store,
-		spaces:     map[string]*SpaceState{},
-		clients:    map[*Client]bool{},
-		register:   make(chan *Client, 64),
-		unregister: make(chan *Client, 64),
-		closed:     make(chan struct{}),
-		bots:       NewBotManager(),
-		sfu:        newMediaSFU(),
-		bubbles:    map[string]string{},
+		store:        store,
+		spaces:       map[string]*SpaceState{},
+		clients:      map[*Client]bool{},
+		register:     make(chan *Client, 64),
+		unregister:   make(chan *Client, 64),
+		closed:       make(chan struct{}),
+		bots:         NewBotManager(),
+		sfu:          newMediaSFU(),
+		bubbles:      map[string]string{},
 		recentNonces: map[string]map[string]time.Time{},
-		avatarReg:  newAvatarRegistry(),
+		avatarReg:    newAvatarRegistry(),
 	}
 	for _, w := range store.ListWorlds() {
 		h.spaces[w.ID] = NewSpaceState(w)

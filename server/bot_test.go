@@ -142,7 +142,7 @@ func TestBotBuildsHouseInGarden(t *testing.T) {
 		{18, 24, "door"},                       // door
 		{26, 20, "flower"}, {30, 20, "flower"}, // heart lobes
 		{25, 21, "flower"}, {31, 21, "flower"}, // heart row
-		{28, 25, "flower"},                     // heart tip
+		{28, 25, "flower"}, // heart tip
 	}
 	for _, c := range checks {
 		if got := w.TileAt(c.x, c.y); got != c.want {

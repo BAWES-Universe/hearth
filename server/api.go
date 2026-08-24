@@ -334,7 +334,7 @@ func (h *Hub) publishWorld(w http.ResponseWriter, r *http.Request, id string) {
 		"ok": true, "id": id, "name": updated.Name,
 		"is_published": true, "is_showcase": updated.IsShowcase,
 		"published_at": updated.PublishedAt,
-		"owner": map[string]any{"id": updated.OwnerID, "name": h.store.userDisplay(updated.OwnerID)},
+		"owner":        map[string]any{"id": updated.OwnerID, "name": h.store.userDisplay(updated.OwnerID)},
 	})
 }
 
@@ -379,8 +379,8 @@ func (h *Hub) getWorld(w http.ResponseWriter, r *http.Request, id string) {
 			"id": meta.ID, "name": meta.Name,
 			"is_showcase": meta.IsShowcase, "is_published": meta.IsPublished,
 			"published_at": meta.PublishedAt, "created_at": meta.CreatedAt,
-			"owner":  map[string]any{"id": meta.OwnerID, "name": h.store.userDisplay(meta.OwnerID)},
-			"role":   role, "editors": editors,
+			"owner": map[string]any{"id": meta.OwnerID, "name": h.store.userDisplay(meta.OwnerID)},
+			"role":  role, "editors": editors,
 			"gravity": map[string]any{
 				"love": score.Love, "reach": score.Reach,
 				"momentum": score.Momentum, "gravity": score.Gravity,
@@ -476,14 +476,14 @@ func (h *Hub) directory(q string) ([]map[string]any, error) {
 		}
 		out = append(out, map[string]any{
 			"id": e.id, "name": e.name,
-			"is_showcase":   meta.IsShowcase,
-			"is_published":  true,
-			"published_at":  meta.PublishedAt,
-			"created_at":    meta.CreatedAt,
-			"owner":         map[string]any{"id": meta.OwnerID, "name": h.store.userDisplay(meta.OwnerID)},
-			"headcount":     headcount,
-			"gravity":       map[string]any{"love": score.Love, "reach": score.Reach, "momentum": score.Momentum, "gravity": score.Gravity},
-			"thumbnail":     nil, // S2 renders from HMF v1; placeholder for now
+			"is_showcase":  meta.IsShowcase,
+			"is_published": true,
+			"published_at": meta.PublishedAt,
+			"created_at":   meta.CreatedAt,
+			"owner":        map[string]any{"id": meta.OwnerID, "name": h.store.userDisplay(meta.OwnerID)},
+			"headcount":    headcount,
+			"gravity":      map[string]any{"love": score.Love, "reach": score.Reach, "momentum": score.Momentum, "gravity": score.Gravity},
+			"thumbnail":    nil, // S2 renders from HMF v1; placeholder for now
 		})
 	}
 	return out, nil
