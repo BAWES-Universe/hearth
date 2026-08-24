@@ -170,7 +170,7 @@ var ErrTooManyCells = errors.New("hmf: op exceeds max cells per op")
 type Cell struct {
 	X       int  `json:"x"`
 	Y       int  `json:"y"`
-	TileID  int  `json:"tileId"`
+	TileID  int  `json:"tileId,omitempty"` // per-cell tile (T2 freeform-undo); absent = use op-level
 	HasTile bool `json:"-"`
 }
 

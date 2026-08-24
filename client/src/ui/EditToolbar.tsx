@@ -1,11 +1,13 @@
 // Editor-mode shell (S2): mode tabs Play / Paint / Portal wired to the editor
 // bridge in App (which sends frozen HMF v1 ops over WS — server-arbitrated).
-// When the S3 editor module lands, the bridge swaps to its exports; the shell
-// stays the same.
+// T2 editor v2 adds Objects + Assets (custom image upload → place like a
+// tile). When the S3 editor module lands, the bridge swaps to its exports;
+// the shell stays the same.
 
 import { TILE_DEFS } from '../world/tiles';
+import type { AssetRecord } from '../net/api';
 
-export type EditMode = 'play' | 'paint' | 'portal' | 'objects';
+export type EditMode = 'play' | 'paint' | 'portal' | 'objects' | 'assets';
 
 /** Functional object palette (server-validated kinds: door|npc|sign|light). */
 export type ObjectKind = 'door' | 'npc' | 'sign' | 'light';
@@ -31,9 +33,10 @@ const PAINTABLE = Object.keys(TILE_DEFS)
 
 const MODE_HINT: Record<EditMode, string> = {
   play: 'Tap to move · pinch to zoom · drag to pan',
-  paint: 'Paint mode — tap tiles to build · edits save live for everyone',
+  paint: 'Paint mode — tap or drag to draw · edits save live for everyone',
   portal: 'Portal mode — tap a tile to drop a portal back to town-square',
   objects: 'Objects mode — tap a tile to place the selected object',
+  assets: 'Assets mode — place your uploaded images · edits save live for everyone',
 };
 
 export function EditToolbar({
@@ -55,6 +58,13 @@ export function EditToolbar({
   mineCount,
   objectKind,
   onObjectKind,
+  assets,
+  assetBrush,
+  onAssetBrush,
+  removingAsset,
+  onRemovingAsset,
+  uploading,
+  onUpload,
 }: {
   mode: EditMode;
   onMode(m: EditMode): void;
@@ -74,6 +84,14 @@ export function EditToolbar({
   mineCount: number;
   objectKind: ObjectKind;
   onObjectKind(k: ObjectKind): void;
+  /** T2 custom asset upload: registry palette + selection + remove toggle. */
+  assets: AssetRecord[];
+  assetBrush: string | null;
+  onAssetBrush(id: string | null): void;
+  removingAsset: boolean;
+  onRemovingAsset(b: boolean): void;
+  uploading: boolean;
+  onUpload(file: File): void;
 }) {
   const inEdit = mode !== 'play';
   return (
@@ -110,7 +128,7 @@ export function EditToolbar({
                   <span class="mine-dot" aria-hidden="true" /> you painted {mineCount}{' '}
                   {mineCount === 1 ? 'tile' : 'tiles'} here
                 </span>
-                <span class="paint-how-text">tap tiles to paint · edits save live for everyone</span>
+                <span class="paint-how-text">tap or drag to draw · edits save live for everyone</span>
               </div>
             </>
           )}
@@ -137,6 +155,59 @@ export function EditToolbar({
               </div>
             </>
           )}
+          {mode === 'assets' && (
+            <>
+              <div class="palette-row asset-row">
+                {assets.map((a) => (
+                  <button
+                    key={a.id}
+                    class={`asset-swatch${assetBrush === a.id && !removingAsset ? ' active' : ''}`}
+                    onClick={() => {
+                      onRemovingAsset(false);
+                      onAssetBrush(assetBrush === a.id ? null : a.id);
+                    }}
+                    title={`${a.name || 'asset'} — tap a tile to place`}
+                    aria-label={`Place asset ${a.name || a.id}`}
+                  >
+                    <img src={a.url} alt={a.name || 'asset'} draggable={false} />
+                  </button>
+                ))}
+                <label
+                  class={`asset-swatch upload${uploading ? ' busy' : ''}`}
+                  title="Upload an image (png/jpeg/gif/webp, ≤512KB)"
+                >
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/gif,image/webp"
+                    onChange={(e) => {
+                      const f = (e.target as HTMLInputElement).files?.[0];
+                      if (f) onUpload(f);
+                      (e.target as HTMLInputElement).value = '';
+                    }}
+                    hidden
+                  />
+                  {uploading ? '…' : '⬆'}
+                </label>
+                <button
+                  class={`swatch eraser${removingAsset ? ' active' : ''}`}
+                  onClick={() => onRemovingAsset(!removingAsset)}
+                  title="Remove — tap a placed asset to remove it"
+                  aria-label="Remove asset tool"
+                >
+                  🗑
+                </button>
+              </div>
+              <div class="paint-how">
+                <span class="paint-how-text">
+                  {removingAsset
+                    ? 'remove mode — tap a placed asset to delete it'
+                    : assetBrush
+                      ? 'tap a tile to place the selected image · uploads save live for everyone'
+                      : 'pick an image (or upload one) then tap a tile to place it'}
+                </span>
+              </div>
+            </>
+          )}
           <div class="edit-actions">
             <button class="tool-btn" onClick={onUndo} disabled={!canUndo} title="Undo (compensating inverse op)">
               ↩ Undo
@@ -158,7 +229,7 @@ export function EditToolbar({
         </div>
       )}
       <div class="mode-dock" role="tablist" aria-label="Editor mode">
-        {(['play', 'paint', 'portal', 'objects'] as const).map((m) => (
+        {(['play', 'paint', 'portal', 'objects', 'assets'] as const).map((m) => (
           <button
             key={m}
             role="tab"
@@ -166,7 +237,7 @@ export function EditToolbar({
             class={`mode-tab${mode === m ? ' active' : ''}`}
             onClick={() => onMode(m)}
           >
-            {m === 'play' ? 'Play' : m === 'paint' ? 'Paint' : m === 'portal' ? 'Portal' : 'Objects'}
+            {m === 'play' ? 'Play' : m === 'paint' ? 'Paint' : m === 'portal' ? 'Portal' : m === 'objects' ? 'Objects' : 'Assets'}
           </button>
         ))}
       </div>

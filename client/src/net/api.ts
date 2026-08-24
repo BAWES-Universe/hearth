@@ -154,6 +154,49 @@ export async function publishWorld(id: string, deviceKey: string, base = ''): Pr
   }
 }
 
+/** One uploaded image in a world's asset registry (T2 editor v2). */
+export interface AssetRecord {
+  id: string;
+  name: string;
+  mime: string;
+  w: number;
+  h: number;
+  url: string;
+}
+
+/** GET /api/worlds/{id}/assets — the world's asset registry (editor palette). */
+export async function listWorldAssets(worldId: string): Promise<AssetRecord[]> {
+  try {
+    const r = await fetch(`/api/worlds/${encodeURIComponent(worldId)}/assets`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!r.ok) return [];
+    const body = (await r.json()) as { ok?: boolean; assets?: AssetRecord[] };
+    return Array.isArray(body?.assets) ? body.assets : [];
+  } catch {
+    return [];
+  }
+}
+
+/** POST /api/worlds/{id}/assets — multipart image upload (png/jpeg/gif/webp, ≤512KB). */
+export async function uploadAsset(worldId: string, file: File, name: string): Promise<AssetRecord | null> {
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    if (name.trim()) fd.append('name', name.trim());
+    const r = await fetch(`/api/worlds/${encodeURIComponent(worldId)}/assets`, {
+      method: 'POST',
+      body: fd,
+      headers: { Accept: 'application/json' },
+    });
+    if (!r.ok) return null;
+    const body = (await r.json()) as { ok?: boolean; asset?: AssetRecord };
+    return body?.ok && body.asset ? body.asset : null;
+  } catch {
+    return null;
+  }
+}
+
 /** GET /api/worlds/{id} — single world doc (flags + gravity + headcount). */
 export async function fetchWorldDoc(id: string, base = ''): Promise<WorldEntry | null> {
   try {

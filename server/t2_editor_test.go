@@ -281,11 +281,21 @@ func TestAssetUploadPlaceBroadcastRemove(t *testing.T) {
 		a, ok := d["asset"].(map[string]any)
 		return ok && a["assetId"] == assetID
 	}, "owner asset ack")
-	if oad["asset"].(map[string]any)["remove"] == true {
+	oaPl, ok := oad["asset"].(map[string]any)
+	if !ok {
+		t.Fatalf("owner asset ack missing asset payload: %v", oad)
+	}
+	if oaPl["remove"] == true {
 		t.Fatal("place ack should not be remove")
 	}
 	obsAck := <-observerAckP
-	oa := obsAck["asset"].(map[string]any)
+	if obsAck == nil {
+		t.Fatal("timeout waiting for observer asset broadcast")
+	}
+	oa, ok := obsAck["asset"].(map[string]any)
+	if !ok {
+		t.Fatalf("observer asset ack missing asset payload: %v", obsAck)
+	}
 	if oa["url"] == "" || oa["remove"] == true {
 		t.Fatalf("observer asset ack missing url/remove flag: %v", oa)
 	}

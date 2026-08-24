@@ -4,7 +4,10 @@ import {
   createWorld,
   fetchSpace,
   listWorlds,
+  listWorldAssets,
   publishWorld,
+  uploadAsset,
+  type AssetRecord,
   type WorldEntry,
 } from './net/api';
 import {
@@ -45,13 +48,26 @@ interface PortalMarker {
 
 /** One self-edit recorded for compensating-inverse undo (stack >= 50). */
 interface UndoEntry {
-  op: 'paint' | 'erase' | 'portal' | 'object';
+  op: 'paint' | 'erase' | 'portal' | 'object' | 'asset';
   x: number;
   y: number;
   tileId?: number;
   priorTileId?: number;
   portalId?: string;
   objectId?: string;
+  /** Freeform stroke: per-cell prior tiles for a single batch inverse op. */
+  cells?: { x: number; y: number; tileId: number }[];
+  /** Asset placement/removal (op 'asset'). */
+  asset?: { assetId: string; x: number; y: number; remove?: boolean };
+}
+
+/** One in-flight freeform stroke (paint mode drag). */
+interface StrokeState {
+  active: boolean;
+  cells: Map<string, { x: number; y: number }>;
+  lastX: number;
+  lastY: number;
+  pointerId: number;
 }
 
 const UNDO_CAP = 100;
@@ -84,6 +100,33 @@ function deviceKey(): string {
   return k;
 }
 
+/** Bresenham walk between two tile coords (inclusive) — stroke continuity. */
+function lineCells(x0: number, y0: number, x1: number, y1: number): { x: number; y: number }[] {
+  const out: { x: number; y: number }[] = [];
+  let dx = Math.abs(x1 - x0);
+  let dy = -Math.abs(y1 - y0);
+  const sx = x0 < x1 ? 1 : -1;
+  const sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy;
+  let x = x0;
+  let y = y0;
+  for (;;) {
+    out.push({ x, y });
+    if (x === x1 && y === y1) break;
+    const e2 = 2 * err;
+    if (e2 >= dy) {
+      err += dy;
+      x += sx;
+    }
+    if (e2 <= dx) {
+      err += dx;
+      y += sy;
+    }
+    if (out.length > 4096) break; // safety: cap a single stroke op
+  }
+  return out;
+}
+
 export function App() {
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<WorldRenderer | null>(null);
@@ -108,6 +151,15 @@ export function App() {
   const [brush, setBrush] = useState(1);
   const [erasing, setErasing] = useState(false);
   const [objectKind, setObjectKind] = useState<ObjectKind>('door');
+  // T2 custom asset upload: registry (palette) + selected asset + remove toggle
+  const [assets, setAssets] = useState<AssetRecord[]>([]);
+  const [assetBrush, setAssetBrush] = useState<string | null>(null);
+  const [removingAsset, setRemovingAsset] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  /** Upload dialog: picked file awaiting a name + confirm. */
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [assetName, setAssetName] = useState('');
   /** Server-arbitrated edit permission (welcome + spaces REST envelope). */
   const [canEdit, setCanEdit] = useState(true);
   const [undoCount, setUndoCount] = useState(0);
@@ -150,17 +202,69 @@ export function App() {
   const toastTimer = useRef<number | null>(null);
   const sheetOpenRef = useRef(false);
   const worldsQueryRef = useRef('');
+  const assetBrushRef = useRef<string | null>(null);
+  const removingAssetRef = useRef(false);
+  /** Active freeform stroke (paint mode drag), accumulated per pointer. */
+  const strokeRef = useRef<StrokeState>({ active: false, cells: new Map(), lastX: -1, lastY: -1, pointerId: -1 });
 
   modeRef.current = mode;
   brushRef.current = brush;
   erasingRef.current = erasing;
   objectKindRef.current = objectKind;
   canEditRef.current = canEdit;
+  assetBrushRef.current = assetBrush;
+  removingAssetRef.current = removingAsset;
 
   const showToast = useCallback((t: string) => {
     setToast(t);
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 2600);
+  }, []);
+
+  /** T2: refresh the world's uploaded-asset registry (palette survives reload). */
+  const loadAssets = useCallback(async (space: string) => {
+    if (!space) return;
+    const list = await listWorldAssets(space);
+    setAssets(list);
+    setAssetBrush((prev) => (prev && list.some((a) => a.id === prev) ? prev : null));
+  }, []);
+
+  /** File picked in the toolbar → open the upload dialog (name + confirm). */
+  const onPickUpload = useCallback(
+    (f: File) => {
+      if (!/^image\/(png|jpeg|gif|webp)$/.test(f.type) && !/\.(png|jpe?g|gif|webp)$/i.test(f.name)) {
+        showToast('Upload an image: png/jpeg/gif/webp');
+        return;
+      }
+      setPendingFile(f);
+      setAssetName(f.name.replace(/\.[^.]+$/, '').slice(0, 40));
+      setUploadOpen(true);
+    },
+    [showToast],
+  );
+
+  const confirmUpload = useCallback(async () => {
+    const space = lastSpaceRef.current;
+    const f = pendingFile;
+    if (!space || !f) return;
+    setUploading(true);
+    const rec = await uploadAsset(space, f, assetName);
+    setUploading(false);
+    setUploadOpen(false);
+    setPendingFile(null);
+    if (rec) {
+      setAssets((prev) => [...prev.filter((a) => a.id !== rec.id), rec]);
+      setAssetBrush(rec.id);
+      setRemovingAsset(false);
+      showToast('Asset uploaded — tap a tile to place it');
+    } else {
+      showToast('Upload failed — png/jpeg/gif/webp, ≤512KB');
+    }
+  }, [pendingFile, assetName, showToast]);
+
+  const cancelUpload = useCallback(() => {
+    setUploadOpen(false);
+    setPendingFile(null);
   }, []);
 
   // ------------------------------------------------------------ routing
@@ -299,12 +403,27 @@ export function App() {
       const ox = d.object?.x ?? d.x ?? 0;
       const oy = d.object?.y ?? d.y ?? 0;
       if (oid) stack.push({ op: 'object', x: ox, y: oy, objectId: oid });
+    } else if (d.op === 'asset') {
+      // asset placement → undo = compensating removal (and vice versa)
+      const a = d.asset;
+      if (a && typeof a.x === 'number' && typeof a.y === 'number') {
+        stack.push({ op: 'asset', x: a.x, y: a.y, asset: { assetId: a.assetId, x: a.x, y: a.y, remove: !a.remove } });
+      }
     } else if (d.op === 'portal') {
       if (d.portal) {
         stack.push({ op: 'portal', x: d.portal.x, y: d.portal.y, portalId: d.portal.id });
       } else if (d.portalId) {
         const gone = portalsRef.current.find((p) => p.id === d.portalId);
         if (gone) stack.push({ op: 'portal', x: gone.x, y: gone.y, portalId: gone.id });
+      }
+    } else if (Array.isArray(d.cells) && d.cells.length > 0) {
+      // freeform stroke: one undo entry restoring every cell to its own prior
+      const cells = d.cells
+        .filter((c) => c && typeof c.x === 'number' && typeof c.y === 'number')
+        .map((c) => ({ x: c.x, y: c.y, tileId: c.priorTileId ?? 0 }));
+      if (cells.length > 0) {
+        const first = cells[0];
+        stack.push({ op: 'paint', x: first.x, y: first.y, cells });
       }
     } else if (typeof d.x === 'number' && typeof d.y === 'number') {
       stack.push({
@@ -335,7 +454,27 @@ export function App() {
     (d: EditMsg) => {
       const r = rendererRef.current;
       if (!r) return;
-      if (d.op !== 'portal' && typeof d.x === 'number' && typeof d.y === 'number' && typeof d.tileId === 'number') {
+      if (d.op === 'asset' && d.asset) {
+        // T2 custom asset: place or remove the image sprite
+        const a = d.asset;
+        if (a.remove) r.removeAsset(a.assetId, a.x, a.y);
+        else r.placeAsset({ assetId: a.assetId, name: a.name, url: a.url, x: a.x, y: a.y });
+      } else if (Array.isArray(d.cells) && d.cells.length > 0) {
+        // freeform stroke ack: apply every cell (per-cell tileId wins)
+        for (const c of d.cells) {
+          if (c && typeof c.x === 'number' && typeof c.y === 'number' && typeof c.tileId === 'number') {
+            r.paintTile(c.x, c.y, c.tileId);
+            const key = `${c.x},${c.y}`;
+            if (d.by === selfIdRef.current) {
+              if (c.tileId === 0) mineRef.current.delete(key);
+              else mineRef.current.add(key);
+            } else {
+              mineRef.current.delete(key);
+            }
+          }
+        }
+        syncMine();
+      } else if (d.op !== 'portal' && typeof d.x === 'number' && typeof d.y === 'number' && typeof d.tileId === 'number') {
         r.paintTile(d.x, d.y, d.tileId);
         // ownership: tiles whose current state is my last paint
         const key = `${d.x},${d.y}`;
@@ -378,6 +517,7 @@ export function App() {
           setPortals(portalsRef.current);
           r?.setWorld(sp);
           resetMine();
+          void loadAssets(target);
           const doc = sp as { isPublished?: boolean; isShowcase?: boolean; canEdit?: boolean };
           setIsPublished(doc.isPublished === true);
           if (typeof doc.canEdit === 'boolean') setCanEdit(doc.canEdit);
@@ -400,7 +540,7 @@ export function App() {
         window.setTimeout(() => setTeleporting(false), 380);
       }
     },
-    [resetMine],
+    [loadAssets, resetMine],
   );
 
   const joinInto = useCallback(
@@ -431,6 +571,7 @@ export function App() {
             lastSpaceRef.current = sp;
             setSpaceName(sp);
             voiceRef.current?.enter(sp);
+            void loadAssets(sp);
           }
           setPhase('world');
           setMode('play');
@@ -518,12 +659,13 @@ export function App() {
           setPortals(portalsRef.current);
           rendererRef.current?.setWorld(w);
           resetMine();
+          void loadAssets(space);
           const doc = w as { isPublished?: boolean };
           setIsPublished(doc.isPublished === true);
         }
       });
     },
-    [onEdit, handlePortalMsg, onFriendEvent, onFriendPresence],
+    [loadAssets, onEdit, handlePortalMsg, onFriendEvent, onFriendPresence],
   );
 
   const join = useCallback(
@@ -638,13 +780,23 @@ export function App() {
     } else if (u.op === 'portal' && u.portalId) {
       net.sendEdit({ op: 'portal', portalId: u.portalId });
       showToast('Removed portal');
+    } else if (u.op === 'asset' && u.asset) {
+      net.sendEdit({ op: 'asset', asset: u.asset });
+      showToast(u.asset.remove ? 'Undid asset placement' : 'Restored asset');
+    } else if (u.cells && u.cells.length > 0) {
+      // freeform undo: single batch inverse op restoring each cell's prior
+      net.sendEdit({ op: 'paint', cells: u.cells });
+      showToast(`Undid stroke (${u.cells.length} tiles)`);
     } else {
       net.sendEdit({ op: 'paint', x: u.x, y: u.y, tileId: u.priorTileId ?? 0 });
       showToast('Undid last edit');
     }
   }, [showToast]);
 
-  const onEditorTap = useCallback(
+  /** Editor overlay pointer-down: tap ops (portal/objects/assets) or stroke
+   *  begin (paint). Freeform strokes accumulate cells in strokeRef and are
+   *  sent as one batch op on pointer-up (deduped, Bresenham-continuous). */
+  const onEditorPointerDown = useCallback(
     (e: PointerEvent) => {
       const r = rendererRef.current;
       const net = netRef.current;
@@ -670,13 +822,9 @@ export function App() {
         };
         net.sendEdit({ op: 'portal', portal });
         showToast('Portal placed → town-square');
-      } else if (m === 'paint') {
-        if (erasingRef.current) {
-          net.sendEdit({ op: 'erase', x: tile.x, y: tile.y });
-        } else {
-          net.sendEdit({ op: 'paint', x: tile.x, y: tile.y, tileId: brushRef.current });
-        }
-      } else if (m === 'objects') {
+        return;
+      }
+      if (m === 'objects') {
         // server-validated functional object (door|npc|sign|light)
         net.sendEdit({
           op: 'object',
@@ -688,10 +836,88 @@ export function App() {
           },
         });
         showToast(`${objectKindRef.current} placed — tap Undo to remove`);
+        return;
+      }
+      if (m === 'assets') {
+        // T2 custom asset: place (or remove) the selected uploaded image
+        const ab = assetBrushRef.current;
+        if (!ab) {
+          showToast('Pick an asset from the palette first');
+          return;
+        }
+        if (removingAssetRef.current) {
+          net.sendEdit({ op: 'asset', asset: { assetId: ab, x: tile.x, y: tile.y, remove: true } });
+        } else {
+          net.sendEdit({ op: 'asset', asset: { assetId: ab, x: tile.x, y: tile.y } });
+        }
+        return;
+      }
+      // m === 'paint': begin a freeform stroke (accumulate → batch on release)
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        /* capture unsupported — moves outside the overlay still fire */
+      }
+      const cells = new Map<string, { x: number; y: number }>();
+      cells.set(`${tile.x},${tile.y}`, { x: tile.x, y: tile.y });
+      strokeRef.current = { active: true, cells, lastX: tile.x, lastY: tile.y, pointerId: e.pointerId };
+    },
+    [showToast],
+  );
+
+  /** Stroke continuation: Bresenham-walk from the last cell to the current
+   *  pointer cell, adding every cell along the way (deduped via the Map). */
+  const onEditorPointerMove = useCallback((e: PointerEvent) => {
+    const s = strokeRef.current;
+    if (!s.active || e.pointerId !== s.pointerId) return;
+    const r = rendererRef.current;
+    if (!r) return;
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const tile = r.screenToTile(e.clientX - rect.left, e.clientY - rect.top);
+    if (!tile || (tile.x === s.lastX && tile.y === s.lastY)) return;
+    for (const c of lineCells(s.lastX, s.lastY, tile.x, tile.y)) {
+      if (s.cells.size >= 4096) break; // safety: cap a single stroke op
+      s.cells.set(`${c.x},${c.y}`, { x: c.x, y: c.y });
+    }
+    s.lastX = tile.x;
+    s.lastY = tile.y;
+  }, []);
+
+  /** Stroke end: flush the accumulated cells as one batch op (paint or
+   *  erase), then reset the stroke state. */
+  const onEditorPointerUp = useCallback(
+    (e: PointerEvent) => {
+      const s = strokeRef.current;
+      if (!s.active || e.pointerId !== s.pointerId) return;
+      const cells = [...s.cells.values()];
+      strokeRef.current = { active: false, cells: new Map(), lastX: -1, lastY: -1, pointerId: -1 };
+      const el = e.currentTarget as HTMLElement;
+      try {
+        el.releasePointerCapture(e.pointerId);
+      } catch {
+        /* noop */
+      }
+      if (cells.length === 0) return;
+      const net = netRef.current;
+      if (!net) return;
+      if (erasingRef.current) {
+        net.sendEdit({ op: 'erase', cells });
+        if (cells.length > 1) showToast(`Erased ${cells.length} tiles`);
+      } else {
+        net.sendEdit({ op: 'paint', tileId: brushRef.current, cells });
+        if (cells.length > 1) showToast(`Stroke painted (${cells.length} tiles)`);
       }
     },
     [showToast],
   );
+
+  /** Stroke cancel (pointer lost): discard the accumulated cells. */
+  const onEditorPointerCancel = useCallback((e: PointerEvent) => {
+    const s = strokeRef.current;
+    if (!s.active || e.pointerId !== s.pointerId) return;
+    strokeRef.current = { active: false, cells: new Map(), lastX: -1, lastY: -1, pointerId: -1 };
+  }, []);
 
   // portal proximity auto-walk-through (play mode only, with cooldown)
   useEffect(() => {
@@ -808,6 +1034,16 @@ export function App() {
           mineCount={mineCount}
           objectKind={objectKind}
           onObjectKind={setObjectKind}
+          assets={assets}
+          assetBrush={assetBrush}
+          onAssetBrush={(id) => {
+            setAssetBrush(id);
+            if (!id) setRemovingAsset(false);
+          }}
+          removingAsset={removingAsset}
+          onRemovingAsset={setRemovingAsset}
+          uploading={uploading}
+          onUpload={onPickUpload}
         />
       )}
       {inWorld && !canEdit && (
@@ -821,8 +1057,9 @@ export function App() {
         <div class="paint-tip" role="status">
           <div class="paint-tip-title">🖌 Paint mode</div>
           <p class="paint-tip-body">
-            Tap any tile to paint it with the selected brush. Your edits save live and are visible to
-            everyone — amber corner marks show tiles <em>you</em> painted.
+            Tap or drag to paint tiles with the selected brush — dragging draws a continuous
+            freeform stroke. Your edits save live and are visible to everyone — amber corner
+            marks show tiles <em>you</em> painted.
           </p>
           <button
             class="paint-tip-dismiss"
@@ -841,8 +1078,16 @@ export function App() {
         <PortalLayer portals={portals} rendererRef={rendererRef} onUse={(id) => netRef.current?.sendPortal(id)} />
       )}
 
-      {/* editor tap-capture overlay (paint / portal modes) */}
-      {inWorld && mode !== 'play' && <div class="editor-overlay" onPointerDown={onEditorTap} />}
+      {/* editor tap-capture overlay (paint / portal / objects / assets modes) */}
+      {inWorld && mode !== 'play' && (
+        <div
+          class="editor-overlay"
+          onPointerDown={onEditorPointerDown}
+          onPointerMove={onEditorPointerMove}
+          onPointerUp={onEditorPointerUp}
+          onPointerCancel={onEditorPointerCancel}
+        />
+      )}
 
       {phase === 'loading' && (
         <div class="loading">
@@ -889,6 +1134,36 @@ export function App() {
         onDecline={onDeclineFriend}
         onRemove={onRemoveFriend}
       />
+
+      {uploadOpen && (
+        <div class="upload-dialog-backdrop" role="dialog" aria-modal="true" aria-label="Upload asset">
+          <div class="upload-dialog">
+            <div class="upload-dialog-title">⬆ Upload an image</div>
+            <p class="upload-dialog-sub">
+              Stored in this world · placeable like a tile · png/jpeg/gif/webp ≤512KB
+            </p>
+            <input
+              class="upload-name"
+              value={assetName}
+              onInput={(e) => setAssetName((e.target as HTMLInputElement).value)}
+              placeholder="Asset name"
+              maxLength={40}
+            />
+            <div class="upload-actions">
+              <button class="tool-btn" onClick={cancelUpload} disabled={uploading}>
+                Cancel
+              </button>
+              <button
+                class="tool-btn publish"
+                onClick={() => void confirmUpload()}
+                disabled={uploading || !assetName.trim()}
+              >
+                {uploading ? 'Uploading…' : 'Upload'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {teleporting && (
         <div class="teleport-fade" aria-hidden="true">

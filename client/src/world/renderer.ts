@@ -4,19 +4,22 @@
 // interpolated through a 100ms buffer with cubic ease. Optimistic move
 // reporting at 12Hz (seq monotonic).
 
-import { Application, Container, Graphics, Sprite, Text, Texture, TilingSprite } from 'pixi.js';
+import { Application, Assets, Container, Graphics, Sprite, Text, Texture, TilingSprite } from 'pixi.js';
 import { tintColor } from '../colors';
 import { astar, type Pt } from './astar';
 import { InterpBuffer } from './interp';
 import {
+  generateAnimatedFrames,
   generateFloorTexture,
   generateTileTextures,
   genDefaultWorld,
+  isAnimatedTile,
   isPassableTile,
   parseWorld,
   TILE,
   texKey,
   tileVariant,
+  type AnimDef,
 } from './tiles';
 import { onAvatarAssetLoad, renderAvatarSpec } from '../avatar/sprites';
 import { isAssetOption, specAccent, specKey as specKeyOf, type AvatarInfo, type AvatarSpec } from '../avatar/spec';
@@ -319,6 +322,15 @@ export class WorldRenderer {
   /** Raw world envelope from the last setWorld (portals live here). */
   private lastWorld: unknown = null;
 
+  // T2 editor v2: animated tiles + placed user assets (rendered above tiles,
+  // below players).
+  private assetLayer = new Container();
+  private assetSprites = new Map<string, Sprite>();
+  /** tileId -> generated frame textures (server "anims" table is the source). */
+  private animFrames = new Map<number, Texture[]>();
+  private animFps = new Map<number, number>();
+  private animT = 0;
+
   /** Additive glow sprites: portals + hearth (rebuilt per world). */
   private glows: GlowState[] = [];
   /** Light anchor points for fireflies to gather near (tiles). */
@@ -402,7 +414,7 @@ export class WorldRenderer {
     this.vignetteSprite = vig;
 
     this.app.stage.addChild(sky, this.world, wash, vig);
-    this.world.addChild(this.tileLayer, this.mineLayer, this.moveDust, this.playerLayer, this.glowLayer);
+    this.world.addChild(this.tileLayer, this.assetLayer, this.mineLayer, this.moveDust, this.playerLayer, this.glowLayer);
     this.bindInput(cv);
     this.app.ticker.add((t) => this.tick(t.deltaMS / 1000));
     this.app.renderer.on('resize', () => this.resizeOverlays());
@@ -640,6 +652,11 @@ export class WorldRenderer {
       .stroke({ width: 2, color: 0xff6b3d, alpha: 0.28 });
     this.tileLayer.addChild(border);
 
+    // T2: server-authoritative animated-tile table + placed user assets
+    const doc = (w ?? {}) as Record<string, unknown>;
+    this.setAnims(doc.anims as AnimDef[] | undefined);
+    this.setAssets(doc.assets as { assetId: string; name?: string; url?: string; x: number; y: number }[] | undefined);
+
     this.zoom = 1;
     this.pan = { x: 0, y: 0 };
     this.path = null;
@@ -682,6 +699,83 @@ export class WorldRenderer {
     this.tiles.set(key, tileId);
     if (inBounds) this.grid[y * this.worldW + x] = isPassableTile(tileId) ? 1 : 0;
     this.path = null; // path may be invalidated by an edit
+  }
+
+  // -------------------------------------------------- T2 animation + assets
+
+  /** Build the animated-tile frame tables from the server "anims" doc. */
+  setAnims(anims: AnimDef[] | undefined): void {
+    this.animFrames.clear();
+    this.animFps.clear();
+    if (!Array.isArray(anims)) return;
+    for (const a of anims) {
+      if (!a || typeof a.tileId !== 'number' || a.frames <= 0 || a.fps <= 0) continue;
+      this.animFrames.set(a.tileId, generateAnimatedFrames(a.tileId, a.frames));
+      this.animFps.set(a.tileId, a.fps);
+    }
+  }
+
+  /** Advance animated-tile textures (frame cycling by the server's fps). */
+  private tickAnimatedTiles(dt: number): void {
+    if (this.animFrames.size === 0 || this.tileSprites.size === 0) return;
+    this.animT += dt;
+    for (const [key, sp] of this.tileSprites) {
+      const tid = this.tiles.get(key);
+      if (tid === undefined || !isAnimatedTile(tid)) continue;
+      const frames = this.animFrames.get(tid);
+      if (!frames || frames.length === 0) continue;
+      const fps = this.animFps.get(tid) ?? 4;
+      const idx = Math.floor(this.animT * fps) % frames.length;
+      const want = frames[idx];
+      if (sp.texture !== want) sp.texture = want;
+    }
+  }
+
+  /** One placed asset as carried by the world doc / edit ack. */
+  placeAsset(pl: { assetId: string; name?: string; url?: string; x: number; y: number }): void {
+    if (!pl || typeof pl.assetId !== 'string' || !pl.url) return;
+    const key = `${pl.assetId}:${pl.x},${pl.y}`;
+    const old = this.assetSprites.get(key);
+    if (old) {
+      this.assetLayer.removeChild(old);
+      this.assetSprites.delete(key);
+    }
+    void Assets.load(pl.url)
+      .then((tex: Texture) => {
+        // re-check: the world may have been swapped while the image loaded
+        if (this.assetSprites.has(key)) {
+          this.assetSprites.get(key)!.texture = tex;
+          return;
+        }
+        const sp = new Sprite(tex);
+        const scale = Math.min(TILE / Math.max(tex.width, 1), TILE / Math.max(tex.height, 1));
+        sp.scale.set(scale);
+        sp.anchor.set(0.5, 0.5);
+        sp.position.set(pl.x * TILE + TILE / 2, pl.y * TILE + TILE / 2);
+        this.assetLayer.addChild(sp);
+        this.assetSprites.set(key, sp);
+      })
+      .catch(() => {
+        /* image failed to load — leave the cell empty */
+      });
+  }
+
+  /** Remove one placed asset cell (compensating removal op). */
+  removeAsset(assetId: string, x: number, y: number): void {
+    const key = `${assetId}:${x},${y}`;
+    const sp = this.assetSprites.get(key);
+    if (sp) {
+      this.assetLayer.removeChild(sp);
+      this.assetSprites.delete(key);
+    }
+  }
+
+  /** Render all placed assets of a world doc (setWorld helper). */
+  setAssets(list: { assetId: string; name?: string; url?: string; x: number; y: number }[] | undefined): void {
+    for (const sp of this.assetSprites.values()) this.assetLayer.removeChild(sp);
+    this.assetSprites.clear();
+    if (!Array.isArray(list)) return;
+    for (const pl of list) this.placeAsset(pl);
   }
 
   // ------------------------------------------------------------- players
@@ -968,6 +1062,7 @@ export class WorldRenderer {
     this.stepPath(dt);
     this.updateCamera(dt);
     this.tickAtmosphere(dt);
+    this.tickAnimatedTiles(dt);
     // walk: 4-frame cycle at 8Hz (0.125s/frame) while moving; gentle 2-frame
     // idle bob (0.45s/frame) while standing — both local and remote.
     const moving = !!this.local && (!!this.path || !!this.local.dirty);

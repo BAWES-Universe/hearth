@@ -179,7 +179,7 @@ func (s *Store) loadAssetPlacements(spaceID string) ([]WorldAssetPlacement, erro
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var out []WorldAssetPlacement
+	out := []WorldAssetPlacement{}
 	for rows.Next() {
 		p := WorldAssetPlacement{}
 		if err := rows.Scan(&p.AssetID, &p.X, &p.Y, &p.Name); err != nil {
@@ -193,12 +193,9 @@ func (s *Store) loadAssetPlacements(spaceID string) ([]WorldAssetPlacement, erro
 
 func assetURL(id string) string { return "/api/assets/" + id }
 
-// handleWorldAssets: POST /api/worlds/{id}/assets — multipart upload.
+// handleWorldAssets: POST /api/worlds/{id}/assets — multipart upload;
+// GET — the world's asset registry (for the editor palette).
 func (h *Hub) handleWorldAssets(w http.ResponseWriter, r *http.Request, id string) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	sess := h.sessionFromRequest(r)
 	if sess == nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "not authenticated"})
@@ -213,6 +210,27 @@ func (h *Hub) handleWorldAssets(w http.ResponseWriter, r *http.Request, id strin
 	// session on a showcase world. Ownerless non-showcase worlds reject.
 	if !h.canEditSession(sess, sp.World) {
 		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "only the owner of this world can add assets"})
+		return
+	}
+	if r.Method == http.MethodGet {
+		list, err := h.store.ListAssets(sp.World.ID)
+		if err != nil {
+			log.Printf("asset list %s: %v", sp.World.ID, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
+			return
+		}
+		out := make([]map[string]any, 0, len(list))
+		for _, a := range list {
+			out = append(out, map[string]any{
+				"id": a.ID, "name": a.Name, "mime": a.Mime,
+				"w": a.W, "h": a.H, "url": assetURL(a.ID),
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "assets": out})
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxAssetBytes+64<<10)

@@ -92,7 +92,7 @@ type World struct {
 	Zones   []Zone                `json:"zones"`
 	Portals []Portal              `json:"portals"`
 	Objects []WorldObject         `json:"objects,omitempty"`
-	Assets  []WorldAssetPlacement `json:"assets,omitempty"` // T2 placed uploads
+	Assets  []WorldAssetPlacement `json:"assets"` // T2 placed uploads (always present, may be [])
 	Spawn   Spawn                 `json:"spawn"`
 
 	// HMF v1 metadata.
