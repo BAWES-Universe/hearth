@@ -108,12 +108,12 @@ func mustEncodeChunk(t *testing.T, w *World, cx, cy int) string {
 // chunk and for a pathological all-floor chunk.
 func TestRLERoundTrip(t *testing.T) {
 	cases := []string{
-		"",                       // all floor
-		"0:256",                  // explicit all floor
-		"1:256",                  // all wall
-		"0:1,1:1,0:1,1:1,0:252",  // alternating
-		"1:4,3:12,0:240",         // mixed
-		"0:255,19:1",             // single dirt at the end
+		"",                      // all floor
+		"0:256",                 // explicit all floor
+		"1:256",                 // all wall
+		"0:1,1:1,0:1,1:1,0:252", // alternating
+		"1:4,3:12,0:240",        // mixed
+		"0:255,19:1",            // single dirt at the end
 	}
 	for _, c := range cases {
 		grid, err := hmf.DecodeRLE(c)
@@ -132,13 +132,17 @@ func TestRLERoundTrip(t *testing.T) {
 	}
 }
 
-// TestFrozenPalette: the palette must stay exactly the frozen 20 tiles.
+// TestFrozenPalette: the palette must stay exactly the frozen 20 tiles —
+// plus the T2 additive animated tiles (torch 20, glow 21) that the v2 plan
+// grew the palette by. Ids 0-19 are untouchable; anything beyond 21 is a
+// protocol change and must update this test deliberately.
 func TestFrozenPalette(t *testing.T) {
 	want := map[string]int{
 		"floor": 0, "wall": 1, "water": 2, "grass": 3, "stone": 4,
 		"sand": 5, "path": 6, "wood": 7, "lava": 8, "ice": 9,
 		"flower": 10, "bush": 11, "rock": 12, "tree": 13, "roof": 14,
 		"door": 15, "fence": 16, "bridge": 17, "crystal": 18, "dirt": 19,
+		"torch": 20, "glow": 21, // T2 additive animated tiles
 	}
 	if len(hmf.Palette) != len(want) {
 		t.Fatalf("palette size %d, want %d", len(hmf.Palette), len(want))

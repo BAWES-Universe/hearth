@@ -81,6 +81,7 @@ func main() {
 	mux.HandleFunc("/api/worlds/", hub.handleWorldRoute)
 	mux.HandleFunc("/api/worlds/join", hub.joinWorld) // exact beats the /api/worlds/ prefix
 	mux.HandleFunc("/api/worlds/mine", hub.myWorlds)
+	mux.HandleFunc("/api/assets/", hub.handleAssetGet)
 	mux.HandleFunc("/api/bots", hub.handleBots)
 	mux.HandleFunc("/api/bots/", hub.handleBotStatus)
 	mux.HandleFunc("/api/friends", hub.handleFriends)

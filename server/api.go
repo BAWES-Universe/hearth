@@ -78,6 +78,10 @@ func (h *Hub) handleWorldRoute(w http.ResponseWriter, r *http.Request) {
 		h.inviteWorld(w, r, strings.TrimSuffix(id, "/invite"))
 		return
 	}
+	if strings.HasSuffix(id, "/assets") {
+		h.handleWorldAssets(w, r, strings.TrimSuffix(id, "/assets"))
+		return
+	}
 	if strings.HasSuffix(id, "/activity") {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -334,7 +338,7 @@ func (h *Hub) publishWorld(w http.ResponseWriter, r *http.Request, id string) {
 		"ok": true, "id": id, "name": updated.Name,
 		"is_published": true, "is_showcase": updated.IsShowcase,
 		"published_at": updated.PublishedAt,
-		"owner": map[string]any{"id": updated.OwnerID, "name": h.store.userDisplay(updated.OwnerID)},
+		"owner":        map[string]any{"id": updated.OwnerID, "name": h.store.userDisplay(updated.OwnerID)},
 	})
 }
 
@@ -476,14 +480,14 @@ func (h *Hub) directory(q string) ([]map[string]any, error) {
 		}
 		out = append(out, map[string]any{
 			"id": e.id, "name": e.name,
-			"is_showcase":   meta.IsShowcase,
-			"is_published":  true,
-			"published_at":  meta.PublishedAt,
-			"created_at":    meta.CreatedAt,
-			"owner":         map[string]any{"id": meta.OwnerID, "name": h.store.userDisplay(meta.OwnerID)},
-			"headcount":     headcount,
-			"gravity":       map[string]any{"love": score.Love, "reach": score.Reach, "momentum": score.Momentum, "gravity": score.Gravity},
-			"thumbnail":     nil, // S2 renders from HMF v1; placeholder for now
+			"is_showcase":  meta.IsShowcase,
+			"is_published": true,
+			"published_at": meta.PublishedAt,
+			"created_at":   meta.CreatedAt,
+			"owner":        map[string]any{"id": meta.OwnerID, "name": h.store.userDisplay(meta.OwnerID)},
+			"headcount":    headcount,
+			"gravity":      map[string]any{"love": score.Love, "reach": score.Reach, "momentum": score.Momentum, "gravity": score.Gravity},
+			"thumbnail":    nil, // S2 renders from HMF v1; placeholder for now
 		})
 	}
 	return out, nil

@@ -67,20 +67,33 @@ type ChunkInfo struct {
 	Rev int `json:"rev"`
 }
 
+// WorldAssetPlacement is one user-uploaded image placed at a cell (T2 editor
+// v2). Name/URL are denormalized from the world's asset registry at load and
+// at place time, so clients render directly from the world doc without an
+// extra registry fetch.
+type WorldAssetPlacement struct {
+	AssetID string `json:"assetId"`
+	Name    string `json:"name"`
+	URL     string `json:"url"`
+	X       int    `json:"x"`
+	Y       int    `json:"y"`
+}
+
 // World is a persistent space: tile map + zones + portals + spawn point.
 // Live entity positions are RAM-only (see SpaceState in hub.go).
 // HMF v1: tiles live in 16x16 chunks (map_chunks table); ChunkRevs mirrors
 // the persisted per-chunk revision counters in RAM for cheap reads.
 type World struct {
-	ID      string           `json:"id"`
-	Name    string           `json:"name"`
-	Width   int              `json:"width"`
-	Height  int              `json:"height"`
-	Tiles   map[string]*Tile `json:"-"`
-	Zones   []Zone           `json:"zones"`
-	Portals []Portal         `json:"portals"`
-	Objects []WorldObject    `json:"objects,omitempty"`
-	Spawn   Spawn            `json:"spawn"`
+	ID      string                `json:"id"`
+	Name    string                `json:"name"`
+	Width   int                   `json:"width"`
+	Height  int                   `json:"height"`
+	Tiles   map[string]*Tile      `json:"-"`
+	Zones   []Zone                `json:"zones"`
+	Portals []Portal              `json:"portals"`
+	Objects []WorldObject         `json:"objects,omitempty"`
+	Assets  []WorldAssetPlacement `json:"assets,omitempty"` // T2 placed uploads
+	Spawn   Spawn                 `json:"spawn"`
 
 	// HMF v1 metadata.
 	HMFVersion  string         `json:"hmf,omitempty"`
@@ -355,11 +368,13 @@ func (w *World) GeoJSON() map[string]any {
 		"zones":       w.Zones,
 		"portals":     w.Portals,
 		"objects":     w.Objects,
+		"assets":      w.Assets,
 		"spawn":       w.Spawn,
 		"hmf":         hmfVersion,
 		"isPublished": w.IsPublished,
 		"isShowcase":  w.IsShowcase,
 		"palette":     tileTypeList(),
+		"anims":       hmf.Anims(), // T2: server-authoritative animated-tile table
 		"chunks":      w.chunkSummaryLocked(),
 	}
 }
@@ -381,10 +396,10 @@ func (w *World) WorldJSON(entities []*EntitySnap) map[string]any {
 func defaultWorld(id, name string) *World {
 	w := &World{
 		ID: id, Name: name, Width: 32, Height: 32,
-		Tiles:     map[string]*Tile{},
-		Spawn:     Spawn{X: 16, Y: 16},
+		Tiles:      map[string]*Tile{},
+		Spawn:      Spawn{X: 16, Y: 16},
 		HMFVersion: hmfVersion,
-		ChunkRevs: map[string]int{},
+		ChunkRevs:  map[string]int{},
 	}
 	w.Zones = []Zone{{ID: "main", Name: "Main Hall", X: 0, Y: 0, W: 32, H: 32}}
 
