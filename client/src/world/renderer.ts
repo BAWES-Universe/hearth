@@ -34,6 +34,8 @@ export interface RemoteState {
   y: number;
   dir?: string;
   avatar?: AvatarInfo;
+  /** true for ambient bots (server sends "bot" in PublicJSON). */
+  bot?: boolean;
 }
 
 export interface RosterEntry {
@@ -43,6 +45,7 @@ export interface RosterEntry {
   y: number;
   dir?: string;
   avatar?: AvatarInfo;
+  bot?: boolean;
 }
 
 const SPEED = 4.5; // tiles / sec
@@ -74,6 +77,13 @@ interface Remote {
   moving: boolean;
   lastX: number;
   lastY: number;
+  /** last raw server sample (used to synthesize bot glides on teleports). */
+  lastSampleX: number;
+  lastSampleY: number;
+  lastSampleT: number;
+  /** small green "in the voice bubble" dot above the label (lazy). */
+  voiceDot: Sprite | null;
+  bot: boolean;
 }
 
 interface LocalPlayer {
@@ -335,6 +345,15 @@ export class WorldRenderer {
   private local: LocalPlayer | null = null;
   private remotes = new Map<string, Remote>();
 
+  /** Directional movement (WASD / joystick), normalized, magnitude 0..1. */
+  private moveVec = { x: 0, y: 0 };
+  /** Entity ids flagged bot by the server (state/roster) — clickable, smoothed. */
+  private botIds = new Set<string>();
+  /** Entity ids currently in the voice bubble (voice dots above avatars). */
+  private voiceIds = new Set<string>();
+  private voiceSpeaking = false;
+  private voiceT = 0;
+
   private path: Pt[] | null = null;
   private pathIdx = 0;
 
@@ -348,7 +367,11 @@ export class WorldRenderer {
 
   private lastMoveSent = 0;
 
-  constructor(private onLocalMove: (m: LocalMove) => void) {
+  constructor(
+    private onLocalMove: (m: LocalMove) => void,
+    /** Tap on a remote entity (bot/player). Return true to consume the tap (no move). */
+    private onTapEntity?: (id: string, name: string) => boolean,
+  ) {
     // T2: when a custom asset image lands (or fails), drop cached composite
     // frames and refresh any remote whose look uses assets — placeholder
     // frames swap to the real image without waiting for the next state tick.
@@ -643,6 +666,9 @@ export class WorldRenderer {
     this.zoom = 1;
     this.pan = { x: 0, y: 0 };
     this.path = null;
+    this.moveVec = { x: 0, y: 0 };
+    this.botIds.clear();
+    this.voiceIds.clear();
     this.mineLayer.clear();
     this.moveDust.clear();
     this.rebuildGlows();
@@ -739,7 +765,9 @@ export class WorldRenderer {
     const now = performance.now();
     for (const r of roster) {
       if (!r || r.id === this.selfId) continue;
+      if (r.bot) this.botIds.add(r.id);
       const rem = this.ensureRemote(r.id, r.name, r.avatar);
+      rem.bot = !!r.bot;
       rem.buf.push(now, r.x, r.y);
       rem.label.text = r.name || r.id.slice(0, 6);
     }
@@ -750,7 +778,11 @@ export class WorldRenderer {
     for (const s of states) {
       if (!s || s.id === this.selfId) continue;
       const rem = this.ensureRemote(s.id, undefined, s.avatar);
-      rem.buf.push(now, s.x, s.y);
+      if (s.bot) {
+        this.botIds.add(s.id);
+        rem.bot = true;
+      }
+      this.pushSample(rem, now, s.x, s.y);
       if (s.dir) {
         rem.dir = s.dir;
         rem.sprite.scale.x = s.dir === 'left' ? -AV_SCALE : AV_SCALE;
@@ -758,8 +790,38 @@ export class WorldRenderer {
     }
   }
 
+  /**
+   * Push one server sample, synthesizing intermediate glide samples when an
+   * ambient bot teleports (the server sim moves them 1 tile every 2s — raw
+   * samples would snap; the 100ms interp buffer can't hide a 1-tile jump
+   * between two 83ms-spaced frames). Bots glide to the new tile over ~600ms.
+   */
+  private pushSample(rem: Remote, now: number, x: number, y: number): void {
+    const dist = Math.hypot(x - rem.lastSampleX, y - rem.lastSampleY);
+    const gap = now - rem.lastSampleT;
+    if (rem.bot && rem.lastSampleT > 0 && dist > 0.35 && gap > 400) {
+      const steps = 6;
+      for (let i = 1; i <= steps; i++) {
+        const f = i / steps;
+        rem.buf.push(
+          now + i * 100,
+          rem.lastSampleX + (x - rem.lastSampleX) * f,
+          rem.lastSampleY + (y - rem.lastSampleY) * f,
+        );
+      }
+    } else {
+      rem.buf.push(now, x, y);
+    }
+    rem.lastSampleX = x;
+    rem.lastSampleY = y;
+    rem.lastSampleT = now;
+  }
+
   private clearRemotes(): void {
-    for (const r of this.remotes.values()) this.playerLayer.removeChild(r.sprite, r.shadow, r.label);
+    for (const r of this.remotes.values()) {
+      this.playerLayer.removeChild(r.sprite, r.shadow, r.label);
+      if (r.voiceDot) this.playerLayer.removeChild(r.voiceDot);
+    }
     this.remotes.clear();
   }
 
@@ -784,7 +846,23 @@ export class WorldRenderer {
       const label = this.makeLabel(name || id.slice(0, 6), color);
       const shadow = this.makeShadow();
       this.playerLayer.addChild(shadow, sprite, label);
-      rem = { sprite, shadow, label, buf: new InterpBuffer(100), dir: 'down', specKey, spec, moving: false, lastX: -1, lastY: -1 };
+      rem = {
+        sprite,
+        shadow,
+        label,
+        buf: new InterpBuffer(100),
+        dir: 'down',
+        specKey,
+        spec,
+        moving: false,
+        lastX: -1,
+        lastY: -1,
+        lastSampleX: -1,
+        lastSampleY: -1,
+        lastSampleT: 0,
+        voiceDot: null,
+        bot: false,
+      };
       this.remotes.set(id, rem);
     } else if (avatar?.spec && rem.specKey !== specKeyOf(avatar.spec)) {
       // layered spec may arrive on a later state tick — upgrade in place
@@ -950,6 +1028,11 @@ export class WorldRenderer {
       const cur = this.pos(cv, e);
       const moved = Math.hypot(cur.x - this.dragStart.x, cur.y - this.dragStart.y);
       if (moved < 10 && performance.now() - this.dragStart.t < 500) {
+        // bots/players first: a tap on a remote entity is an interaction, not a move
+        if (this.onTapEntity) {
+          const hit = this.pickEntityAt(cur.x, cur.y);
+          if (hit && this.onTapEntity(hit.id, hit.name)) return;
+        }
         // screenToTile is the single source of truth for world<->screen math
         const tile = this.screenToTile(cur.x, cur.y);
         if (tile) this.startMoveTo(tile.x, tile.y);
@@ -966,6 +1049,7 @@ export class WorldRenderer {
   private tick(dt: number): void {
     const now = performance.now();
     this.stepPath(dt);
+    this.stepVector(dt);
     this.updateCamera(dt);
     this.tickAtmosphere(dt);
     // walk: 4-frame cycle at 8Hz (0.125s/frame) while moving; gentle 2-frame
@@ -985,7 +1069,8 @@ export class WorldRenderer {
     this.mineLayer.alpha = labelsVisible ? 1 : 0;
     const ph = moving ? this.walkPhase : (this.idlePhase as WalkPhase);
     this.syncLocal(ph, moving, labelsVisible);
-    for (const r of this.remotes.values()) {
+    this.voiceT += dt;
+    for (const [rid, r] of this.remotes.entries()) {
       const s = r.buf.get(now);
       if (s) {
         r.sprite.position.set(s.x * TILE, s.y * TILE);
@@ -997,6 +1082,25 @@ export class WorldRenderer {
         r.lastX = s.x;
         r.lastY = s.y;
         this.applyCompositePhase(r, r.moving ? this.walkPhase : (this.idlePhase as WalkPhase));
+      }
+      // voice bubble dot above the label — green, pulsing while anyone speaks
+      const inVoice = this.voiceIds.has(rid);
+      if (inVoice) {
+        if (!r.voiceDot) {
+          const dot = new Sprite(this.glowTex);
+          dot.anchor.set(0.5, 0.5);
+          dot.width = 14;
+          dot.height = 14;
+          dot.tint = 0x4ade80;
+          this.playerLayer.addChild(dot);
+          r.voiceDot = dot;
+        }
+        const vy = r.sprite.position.y - TILE * 1.75;
+        r.voiceDot.position.set(r.sprite.position.x, vy);
+        r.voiceDot.alpha = this.voiceSpeaking ? 0.55 + 0.45 * Math.sin(this.voiceT * 6) : 0.9;
+        r.voiceDot.visible = labelsVisible;
+      } else if (r.voiceDot) {
+        r.voiceDot.visible = false;
       }
       r.buf.prune(now);
       r.label.alpha = labelsVisible ? 0.9 : 0;
@@ -1186,6 +1290,88 @@ export class WorldRenderer {
     this.pathIdx = 0;
     this.local.dirty = true;
     return true;
+  }
+
+  // ------------------------------------------------- directional movement
+  // WASD / arrow keys / virtual joystick share one normalized vector; the
+  // tick loop steps the local player along it (axis-separated collision for
+  // wall sliding) and the existing 12Hz maybeSendMove reports positions.
+
+  /**
+   * Set the directional move vector (normalized, magnitude 0..1). Call with
+   * (0,0) to stop. Consumed by stepVector every tick.
+   */
+  setMoveVector(x: number, y: number): void {
+    this.moveVec.x = x;
+    this.moveVec.y = y;
+  }
+
+  /** Cancel tap-path + directional movement (mode switches, panels, portals). */
+  stopMove(): void {
+    this.moveVec.x = 0;
+    this.moveVec.y = 0;
+    this.path = null;
+    this.pathIdx = 0;
+  }
+
+  private stepVector(dt: number): void {
+    const l = this.local;
+    const v = this.moveVec;
+    if (!l) return;
+    const mag = Math.hypot(v.x, v.y);
+    if (mag < 0.12) return;
+    // directional input takes over from any tap-path
+    if (this.path) {
+      this.path = null;
+      this.pathIdx = 0;
+    }
+    const nx = v.x / mag;
+    const ny = v.y / mag;
+    const step = SPEED * dt;
+    const canStand = (tx: number, ty: number): boolean => {
+      const cx = Math.floor(tx);
+      const cy = Math.floor(ty);
+      if (cx < 0 || cy < 0 || cx >= this.worldW || cy >= this.worldH) return false;
+      return this.grid[cy * this.worldW + cx] === 1;
+    };
+    // axis-separated: each axis moves independently so walls slide naturally
+    let moved = false;
+    if (canStand(l.x + nx * step, l.y)) {
+      l.x += nx * step;
+      moved = true;
+    }
+    if (canStand(l.x, l.y + ny * step)) {
+      l.y += ny * step;
+      moved = true;
+    }
+    if (moved) {
+      l.dir = Math.abs(nx) > Math.abs(ny) ? (nx > 0 ? 'right' : 'left') : ny > 0 ? 'down' : 'up';
+      l.dirty = true;
+    }
+  }
+
+  /** True when the entity is a server-flagged ambient bot. */
+  isBot(id: string): boolean {
+    return this.botIds.has(id);
+  }
+
+  /** Which remotes are in the voice bubble (green dots over their avatars). */
+  setVoicePeers(ids: string[], speaking: boolean): void {
+    this.voiceIds = new Set(ids);
+    this.voiceSpeaking = speaking;
+  }
+
+  /** Topmost remote entity under a canvas-relative screen point, if any. */
+  pickEntityAt(px: number, py: number): { id: string; name: string } | null {
+    const z = this.world.scale.x;
+    const ox = this.world.position.x;
+    const oy = this.world.position.y;
+    for (const [id, r] of this.remotes) {
+      const sx = ox + r.sprite.position.x * z;
+      const sy = oy + r.sprite.position.y * z;
+      if (Math.abs(px - sx) < 24 && Math.abs(py - sy) < 32) return { id, name: r.label.text };
+    }
+    return null;
   }
 
   getLocal(): { x: number; y: number; dir: string } | null {

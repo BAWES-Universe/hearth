@@ -11,6 +11,9 @@ export function Hud({
   status,
   unread,
   space,
+  ownerName,
+  role,
+  canEdit,
   friendRequests,
   onOpenChat,
   onOpenWorlds,
@@ -20,12 +23,18 @@ export function Hud({
   status: NetStatus;
   unread: number;
   space: string;
+  ownerName?: string;
+  role?: 'owner' | 'editor' | 'viewer';
+  canEdit?: boolean;
   friendRequests: number;
   onOpenChat(): void;
   onOpenWorlds(): void;
   onOpenFriends(): void;
   onOpenByok(): void;
 }) {
+  // Showcase worlds are co-editable by anyone with a session, so the role
+  // badge reflects the effective permission (canEdit) over the raw role.
+  const roleLabel = canEdit ? (role === 'owner' ? 'owner' : 'co-builder') : 'viewer';
   return (
     <>
       <div class="status-pill">
@@ -34,6 +43,11 @@ export function Hud({
       </div>
       <div class="space-tag" title="Space">
         {space}
+      </div>
+      <div class="world-owner-chip" title="Who owns this world">
+        <span class="owner-role">{roleLabel === 'viewer' ? '👁' : roleLabel === 'owner' ? '👑' : '🔧'}</span>
+        <span class="owner-name">{ownerName && ownerName !== 'guest' ? ownerName : space}</span>
+        <span class={`owner-role-label ${roleLabel}`}>{roleLabel}</span>
       </div>
       <button class="worlds-btn" onClick={onOpenWorlds} aria-label="Browse worlds">
         <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
