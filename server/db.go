@@ -179,81 +179,99 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (user_id, friend_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_friends_user ON friends(user_id, status)`,
-	// --- BYOK (Ox decision 2026-08-24): fingerprint-only key status + usage
-	// audit. There is NO key column anywhere — keys live client-side; the
-	// server keeps sha256(key)[:8] for status display and token usage rows. ---
-	byokStatusDDL,
-	aiUsageDDL,
-	aiUsageIdxDDL,
-	// --- world ownership: edit ACL + single-use invite tokens (ownership.go) ---
-	worldEditorsDDL,
-	worldInvitesDDL,
-	// --- T2 avatar platform (docs/AVATARS.md) ---
-	// Custom image assets uploaded by members. The raw image lives in the
-	// BLOB; the client auto-atlases it into the layered sprite pipeline.
-	// status: active | archived (safe-archive — soft delete that blocks when
-	// the asset is currently worn).
-	`CREATE TABLE IF NOT EXISTS avatar_assets (
-		id TEXT PRIMARY KEY,
-		owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-		layer TEXT NOT NULL,
-		name TEXT NOT NULL DEFAULT '',
-		kind TEXT NOT NULL DEFAULT 'image/png',
-		data BLOB NOT NULL,
-		width INTEGER NOT NULL DEFAULT 0,
-		height INTEGER NOT NULL DEFAULT 0,
-		status TEXT NOT NULL DEFAULT 'active',
-		set_id TEXT NOT NULL DEFAULT '',
-		created_at TEXT NOT NULL
-	)`,
-	`CREATE INDEX IF NOT EXISTS idx_avatar_assets_owner ON avatar_assets(owner_id, status)`,
-	// Versioned collections of options (catalog ids and/or 'asset:<id>')
-	// with a governance scope. version bumps on every item change (audit).
-	`CREATE TABLE IF NOT EXISTS avatar_sets (
-		id TEXT PRIMARY KEY,
-		name TEXT NOT NULL,
-		scope TEXT NOT NULL DEFAULT 'public',
-		world_id TEXT NOT NULL DEFAULT '',
-		version INTEGER NOT NULL DEFAULT 1,
-		created_by TEXT NOT NULL DEFAULT '',
-		created_at TEXT NOT NULL,
-		archived INTEGER NOT NULL DEFAULT 0,
-		archived_at TEXT NOT NULL DEFAULT '',
-		archive_reason TEXT NOT NULL DEFAULT ''
-	)`,
-	`CREATE TABLE IF NOT EXISTS avatar_set_items (
-		set_id TEXT NOT NULL REFERENCES avatar_sets(id) ON DELETE CASCADE,
-		layer TEXT NOT NULL,
-		option_id TEXT NOT NULL,
-		added_by TEXT NOT NULL DEFAULT '',
-		created_at TEXT NOT NULL,
-		PRIMARY KEY (set_id, layer, option_id)
-	)`,
-	`CREATE INDEX IF NOT EXISTS idx_avatar_set_items_set ON avatar_set_items(set_id)`,
-	// Entitlement grants: who may wear a set's options and how long.
-	// kind = direct | time-limited | tag | sub | email-domain | membership.
-	// match carries the tag name / email domain for claim-checked kinds;
-	// expires_at (RFC3339, '' = never) bounds time-limited grants.
-	`CREATE TABLE IF NOT EXISTS avatar_grants (
-		id TEXT PRIMARY KEY,
-		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-		set_id TEXT NOT NULL,
-		kind TEXT NOT NULL DEFAULT 'direct',
-		match TEXT NOT NULL DEFAULT '',
-		expires_at TEXT NOT NULL DEFAULT '',
-		created_by TEXT NOT NULL DEFAULT '',
-		created_at TEXT NOT NULL
-	)`,
-	`CREATE INDEX IF NOT EXISTS idx_avatar_grants_user ON avatar_grants(user_id)`,
-	// Member claims used by claim-checked entitlement kinds (tags,
-	// email domains). Seeded by governance/admin (T3 surface); tests seed
-	// directly. claim_value is lowercase for matching.
-	`CREATE TABLE IF NOT EXISTS user_claims (
-		user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-		claim_type TEXT NOT NULL,
-		claim_value TEXT NOT NULL,
-		PRIMARY KEY (user_id, claim_type, claim_value)
-	)`,
+		// Social clarity: blocks (one row per direction — a block in EITHER
+		// direction suppresses DMs) and reports (abuse reporting, moderation
+		// dashboard reads them; POST /api/reports writes them).
+		`CREATE TABLE IF NOT EXISTS blocks (
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (user_id, blocked_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS reports (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			reporter_id TEXT NOT NULL,
+			reported_id TEXT NOT NULL,
+			space_id TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			ts TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_reports_reported ON reports(reported_id)`,
+		// --- BYOK (Ox decision 2026-08-24): fingerprint-only key status + usage
+		// audit. There is NO key column anywhere — keys live client-side; the
+		// server keeps sha256(key)[:8] for status display and token usage rows. ---
+		byokStatusDDL,
+		aiUsageDDL,
+		aiUsageIdxDDL,
+		// --- world ownership: edit ACL + single-use invite tokens (ownership.go) ---
+		worldEditorsDDL,
+		worldInvitesDDL,
+		// --- T2 avatar platform (docs/AVATARS.md) ---
+		// Custom image assets uploaded by members. The raw image lives in the
+		// BLOB; the client auto-atlases it into the layered sprite pipeline.
+		// status: active | archived (safe-archive — soft delete that blocks when
+		// the asset is currently worn).
+		`CREATE TABLE IF NOT EXISTS avatar_assets (
+			id TEXT PRIMARY KEY,
+			owner_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			layer TEXT NOT NULL,
+			name TEXT NOT NULL DEFAULT '',
+			kind TEXT NOT NULL DEFAULT 'image/png',
+			data BLOB NOT NULL,
+			width INTEGER NOT NULL DEFAULT 0,
+			height INTEGER NOT NULL DEFAULT 0,
+			status TEXT NOT NULL DEFAULT 'active',
+			set_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_avatar_assets_owner ON avatar_assets(owner_id, status)`,
+		// Versioned collections of options (catalog ids and/or 'asset:<id>')
+		// with a governance scope. version bumps on every item change (audit).
+		`CREATE TABLE IF NOT EXISTS avatar_sets (
+			id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			scope TEXT NOT NULL DEFAULT 'public',
+			world_id TEXT NOT NULL DEFAULT '',
+			version INTEGER NOT NULL DEFAULT 1,
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			archived INTEGER NOT NULL DEFAULT 0,
+			archived_at TEXT NOT NULL DEFAULT '',
+			archive_reason TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS avatar_set_items (
+			set_id TEXT NOT NULL REFERENCES avatar_sets(id) ON DELETE CASCADE,
+			layer TEXT NOT NULL,
+			option_id TEXT NOT NULL,
+			added_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (set_id, layer, option_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_avatar_set_items_set ON avatar_set_items(set_id)`,
+		// Entitlement grants: who may wear a set's options and how long.
+		// kind = direct | time-limited | tag | sub | email-domain | membership.
+		// match carries the tag name / email domain for claim-checked kinds;
+		// expires_at (RFC3339, '' = never) bounds time-limited grants.
+		`CREATE TABLE IF NOT EXISTS avatar_grants (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			set_id TEXT NOT NULL,
+			kind TEXT NOT NULL DEFAULT 'direct',
+			match TEXT NOT NULL DEFAULT '',
+			expires_at TEXT NOT NULL DEFAULT '',
+			created_by TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_avatar_grants_user ON avatar_grants(user_id)`,
+		// Member claims used by claim-checked entitlement kinds (tags,
+		// email domains). Seeded by governance/admin (T3 surface); tests seed
+		// directly. claim_value is lowercase for matching.
+		`CREATE TABLE IF NOT EXISTS user_claims (
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			claim_type TEXT NOT NULL,
+			claim_value TEXT NOT NULL,
+			PRIMARY KEY (user_id, claim_type, claim_value)
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -916,6 +934,39 @@ func (s *Store) CountSessions() (int, error) {
 func (s *Store) InsertMessage(spaceID, sessionID, userID, name, channel, text string) error {
 	_, err := s.db.Exec(`INSERT INTO messages (space_id, session_id, user_id, name, channel, text, ts) VALUES (?,?,?,?,?,?,?)`,
 		spaceID, sessionID, userID, name, channel, text, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+// --- social clarity: blocks + reports ---
+
+// BlockUser records a one-direction block (a -> b). Either direction is
+// sufficient to suppress DMs between the pair (AreBlocked checks both).
+func (s *Store) BlockUser(a, b string) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO blocks (user_id, blocked_id, created_at) VALUES (?,?,?)`,
+		a, b, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+// UnblockUser removes a one-direction block (a -> b).
+func (s *Store) UnblockUser(a, b string) error {
+	_, err := s.db.Exec(`DELETE FROM blocks WHERE user_id = ? AND blocked_id = ?`, a, b)
+	return err
+}
+
+// AreBlocked reports whether EITHER direction of the pair is blocked — a DM
+// is suppressed when a blocked either b or b blocked a.
+func (s *Store) AreBlocked(a, b string) bool {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM blocks WHERE (user_id = ? AND blocked_id = ?) OR (user_id = ? AND blocked_id = ?)`,
+		a, b, b, a).Scan(&n)
+	return err == nil && n > 0
+}
+
+// InsertReport appends one abuse report row (moderation dashboard reads it).
+func (s *Store) InsertReport(reporterID, reportedID, spaceID, reason string) error {
+	_, err := s.db.Exec(`INSERT INTO reports (reporter_id, reported_id, space_id, reason, ts) VALUES (?,?,?,?,?)`,
+		reporterID, reportedID, spaceID, reason, time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 

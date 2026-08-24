@@ -288,8 +288,8 @@ func (h *Hub) handleChunkGet(sp *SpaceState, c *Client, op *hmf.Op) {
 	c.emit("chunk", map[string]any{
 		"spaceId": w.ID,
 		"cx":      op.CX, "cy": op.CY,
-		"rev":  rev,
-		"rle":  rle,
+		"rev":   rev,
+		"rle":   rle,
 		"tiles": tiles,
 	})
 	log.Printf("chunk_get: %s %d,%d rev=%d (%d tiles)", w.ID, op.CX, op.CY, rev, len(tiles))

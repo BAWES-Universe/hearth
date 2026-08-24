@@ -46,6 +46,7 @@ type Client struct {
 	lastEntities  map[string]entityPos
 	lastSpace     string
 	lastStateSent time.Time
+	dmWindow      map[string][]time.Time // per-recipient DM timestamps (5/min cap)
 }
 
 func newClient(h *Hub, conn *websocket.Conn) *Client {
@@ -55,6 +56,7 @@ func newClient(h *Hub, conn *websocket.Conn) *Client {
 		send:         make(chan []byte, sendQueueSize),
 		rate:         NewTokenBucket(5, 0.5), // burst 5 / 10s, sustained 1 / 2s
 		lastEntities: map[string]entityPos{},
+		dmWindow:     map[string][]time.Time{},
 	}
 }
 
@@ -395,14 +397,17 @@ func (c *Client) handleJoin(msg map[string]any) {
 	c.emit("welcome", map[string]any{
 		"sessionId": sess.ID, "selfId": e.ID, "entityId": e.ID,
 		"spaceId": spaceID, "name": e.Name, "x": e.X, "y": e.Y, "dir": e.Dir,
-		"avatar": e.Avatar,
+		"avatar":  e.Avatar,
 		"canEdit": c.hub.canEditWorld(sess, sp.World),
-		"world":  sp.World.GeoJSON(),
+		"world":   sp.World.GeoJSON(),
 		// roster: everyone already in the space (PROTOCOL.md) — the 12Hz
 		// state stream is the live source, but the roster makes peers
 		// visible immediately instead of after the first heartbeat.
-		"roster": entityListJSON(sp.EntitySnaps()),
+		// Carries userId so the client can gate the DM button on friends.
+		"roster": rosterListJSON(sp.EntitySnaps()),
 	})
+	// Social clarity roster: additive presence delta (join) to the space.
+	c.hub.broadcastPresence(sp, "join", e)
 	// gravity/audit: presence event (Reach = unique visitors)
 	c.hub.emitActivity(spaceID, sess.UserID, "member", "presence", "join", spaceID,
 		diffJSON(map[string]any{"name": e.Name, "x": e.X, "y": e.Y}), sanitizeIP(c.conn.RemoteAddr().String()))
@@ -488,6 +493,10 @@ func (c *Client) handlePortal(msg map[string]any) {
 	c.setSpace(p.TargetSpace)
 	c.setEntity(c.Entity)
 	c.setPos(p.TargetX, p.TargetY)
+	// Social clarity roster: portal = leave old space + join new (the third
+	// presence hook alongside join and disconnect).
+	c.hub.broadcastPresence(sp, "leave", c.Entity)
+	c.hub.broadcastPresence(target, "join", c.Entity)
 	c.emit("portal", map[string]any{
 		"portalId": p.ID,
 		"spaceId":  p.TargetSpace, "x": p.TargetX, "y": p.TargetY,
@@ -561,7 +570,7 @@ func (c *Client) handleMedia(msg map[string]any) {
 	}
 	// Pass-through relay for now — the media/ package integrates later.
 	target.Client.emit("media", map[string]any{
-		"from": c.Entity.ID,
+		"from":   c.Entity.ID,
 		"action": getString(msg, "action"), "data": msg["data"],
 	})
 	log.Printf("media relay (pass-through, media/ integration pending): %s -> %s action=%s",
@@ -629,7 +638,7 @@ func (h *Hub) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "service": "hearth", "version": version,
 		"uptime_s": int(time.Since(startTime).Seconds()),
-		"spaces": nSpaces, "clients": nClients,
+		"spaces":   nSpaces, "clients": nClients,
 		"entities": totalEntities, "bots": totalBots,
 		"sessions": sessions, "t": time.Now().UTC().Format(time.RFC3339),
 	})

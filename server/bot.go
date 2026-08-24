@@ -44,10 +44,10 @@ import (
 
 // BotScript is the agent-facing op-sequence format (docs/BOT-PROTOCOL.md).
 type BotScript struct {
-	V     int          `json:"v"`     // format version (1)
-	Name  string       `json:"name"`  // bot display name
-	World string       `json:"world"` // target world id (e.g. "garden")
-	Ops   []BotScriptOp `json:"ops"`  // ordered op sequence
+	V     int           `json:"v"`     // format version (1)
+	Name  string        `json:"name"`  // bot display name
+	World string        `json:"world"` // target world id (e.g. "garden")
+	Ops   []BotScriptOp `json:"ops"`   // ordered op sequence
 }
 
 // BotScriptOp is one op of a script. The wire only ever carries frozen HMF v1
@@ -127,17 +127,17 @@ type BotConfig struct {
 
 // BotResult is the outcome of one bot run (JSON-friendly for the CLI/API).
 type BotResult struct {
-	RunID    string   `json:"runId"`
-	Name     string   `json:"name"`
-	World    string   `json:"world"`
-	BotID    string   `json:"botId"`    // entity/session id from welcome
-	UserID   string   `json:"userId"`   // bot account id (sha256(deviceKey))
-	Ops      int      `json:"ops"`      // ops in the script
-	Applied  int      `json:"applied"`  // ops applied by the server
-	Deduped  int      `json:"deduped"`  // ops skipped as already applied (replay)
-	Seqs     []int64  `json:"seqs"`     // server op seqs, in order
-	FirstErr string   `json:"firstErr,omitempty"`
-	Done     bool     `json:"done"`
+	RunID    string  `json:"runId"`
+	Name     string  `json:"name"`
+	World    string  `json:"world"`
+	BotID    string  `json:"botId"`   // entity/session id from welcome
+	UserID   string  `json:"userId"`  // bot account id (sha256(deviceKey))
+	Ops      int     `json:"ops"`     // ops in the script
+	Applied  int     `json:"applied"` // ops applied by the server
+	Deduped  int     `json:"deduped"` // ops skipped as already applied (replay)
+	Seqs     []int64 `json:"seqs"`    // server op seqs, in order
+	FirstErr string  `json:"firstErr,omitempty"`
+	Done     bool    `json:"done"`
 }
 
 // BotClient is a headless Go bot: authenticates with a deviceKey, joins a
@@ -417,19 +417,19 @@ func int64FromAny(v any) int64 {
 
 // BotRunStatus is the live status of one spawned bot run.
 type BotRunStatus struct {
-	RunID      string   `json:"runId"`
-	Name       string   `json:"name"`
-	World      string   `json:"world"`
-	DeviceKey  string   `json:"deviceKey"`
-	UserID     string   `json:"userId"`
-	Status     string   `json:"status"` // running|done|error
-	Ops        int      `json:"ops"`
-	Applied    int      `json:"applied"`
-	Deduped    int      `json:"deduped"`
-	Seqs       []int64  `json:"seqs"`
-	Err        string   `json:"err,omitempty"`
-	StartedAt  string   `json:"startedAt"`
-	FinishedAt string   `json:"finishedAt,omitempty"`
+	RunID      string  `json:"runId"`
+	Name       string  `json:"name"`
+	World      string  `json:"world"`
+	DeviceKey  string  `json:"deviceKey"`
+	UserID     string  `json:"userId"`
+	Status     string  `json:"status"` // running|done|error
+	Ops        int     `json:"ops"`
+	Applied    int     `json:"applied"`
+	Deduped    int     `json:"deduped"`
+	Seqs       []int64 `json:"seqs"`
+	Err        string  `json:"err,omitempty"`
+	StartedAt  string  `json:"startedAt"`
+	FinishedAt string  `json:"finishedAt,omitempty"`
 }
 
 // BotManager tracks spawned bot runs (one goroutine per run).

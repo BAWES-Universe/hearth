@@ -381,10 +381,10 @@ func (w *World) WorldJSON(entities []*EntitySnap) map[string]any {
 func defaultWorld(id, name string) *World {
 	w := &World{
 		ID: id, Name: name, Width: 32, Height: 32,
-		Tiles:     map[string]*Tile{},
-		Spawn:     Spawn{X: 16, Y: 16},
+		Tiles:      map[string]*Tile{},
+		Spawn:      Spawn{X: 16, Y: 16},
 		HMFVersion: hmfVersion,
-		ChunkRevs: map[string]int{},
+		ChunkRevs:  map[string]int{},
 	}
 	w.Zones = []Zone{{ID: "main", Name: "Main Hall", X: 0, Y: 0, W: 32, H: 32}}
 

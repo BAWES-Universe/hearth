@@ -124,17 +124,17 @@ func (s *Store) logAIUsage(userID, feature string, in, out int) error {
 
 // byokContribution is the per-key impact summary ("what your key brought").
 type byokContribution struct {
-	HasKey      bool                       `json:"hasKey"`
-	Fp          string                     `json:"fp,omitempty"` // masked 8-hex, never the key
-	Model       string                     `json:"model,omitempty"`
-	ValidatedAt int64                      `json:"validatedAt,omitempty"`
-	Calls       int64                      `json:"calls"`
-	TokensIn    int64                      `json:"tokensIn"`
-	TokensOut   int64                      `json:"tokensOut"`
-	TokensTotal int64                      `json:"tokensTotal"`
-	ByFeature   map[string]int64           `json:"byFeature"` // feature -> call count
-	LastUsed    int64                      `json:"lastUsed,omitempty"`
-	Since       int64                      `json:"since,omitempty"` // unix ts window start
+	HasKey      bool             `json:"hasKey"`
+	Fp          string           `json:"fp,omitempty"` // masked 8-hex, never the key
+	Model       string           `json:"model,omitempty"`
+	ValidatedAt int64            `json:"validatedAt,omitempty"`
+	Calls       int64            `json:"calls"`
+	TokensIn    int64            `json:"tokensIn"`
+	TokensOut   int64            `json:"tokensOut"`
+	TokensTotal int64            `json:"tokensTotal"`
+	ByFeature   map[string]int64 `json:"byFeature"` // feature -> call count
+	LastUsed    int64            `json:"lastUsed,omitempty"`
+	Since       int64            `json:"since,omitempty"` // unix ts window start
 }
 
 // contributionByKey aggregates ai_usage for a user (default: last 30 days).
@@ -247,10 +247,10 @@ type orKeyInfo struct {
 
 // orCompletion is the slice of POST /api/v1/chat/completions we need.
 type orCompletion struct {
-	Text   string
-	In     int
-	Out    int
-	Model  string
+	Text  string
+	In    int
+	Out   int
+	Model string
 }
 
 // validateOpenRouterKey calls GET /api/v1/key with the caller's key. The key
@@ -335,7 +335,7 @@ func completeWithKey(ctx context.Context, key, model, prompt string) (*orComplet
 		return nil, err
 	}
 	var parsed struct {
-		Model  string `json:"model"`
+		Model   string `json:"model"`
 		Choices []struct {
 			Message struct {
 				Content string `json:"content"`
@@ -498,7 +498,7 @@ func (h *Hub) byokUpsert(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "fp": fp, "masked": maskFP(fp), "model": model,
 		"validatedAt": st.ValidatedAt,
-		"quota": map[string]any{"limit": st.QuotaLimit, "used": st.QuotaUsed, "isFreeTier": st.IsFreeTier},
+		"quota":       map[string]any{"limit": st.QuotaLimit, "used": st.QuotaUsed, "isFreeTier": st.IsFreeTier},
 	})
 }
 
@@ -523,7 +523,7 @@ func (h *Hub) byokStatus(w http.ResponseWriter, r *http.Request) {
 		"ok": true, "hasKey": true,
 		"fp": st.KeyFP, "masked": maskFP(st.KeyFP), "model": st.Model,
 		"validatedAt": st.ValidatedAt,
-		"quota": map[string]any{"limit": st.QuotaLimit, "used": st.QuotaUsed, "isFreeTier": st.IsFreeTier},
+		"quota":       map[string]any{"limit": st.QuotaLimit, "used": st.QuotaUsed, "isFreeTier": st.IsFreeTier},
 	})
 }
 

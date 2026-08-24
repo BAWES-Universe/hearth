@@ -70,12 +70,12 @@ const assetOptionPrefix = "asset:"
 
 // Set scopes (avatar_sets.scope).
 const (
-	setScopePublic       = "public"
-	setScopeUniverse     = "universe"
-	setScopeWorld        = "world"
-	setScopeMembership   = "membership"
-	setScopeUserGranted  = "user-granted"
-	setScopeNPCOnly      = "npc-only"
+	setScopePublic      = "public"
+	setScopeUniverse    = "universe"
+	setScopeWorld       = "world"
+	setScopeMembership  = "membership"
+	setScopeUserGranted = "user-granted"
+	setScopeNPCOnly     = "npc-only"
 )
 
 // Entitlement grant kinds (avatar_grants.kind).
@@ -145,15 +145,15 @@ func (a *avatarAssetRow) public() AvatarAsset {
 
 // avatarSetRow is the persisted set row.
 type avatarSetRow struct {
-	ID           string
-	Name         string
-	Scope        string
-	WorldID      string
-	Version      int
-	CreatedBy    string
-	CreatedAt    string
-	Archived     bool
-	ArchivedAt   string
+	ID            string
+	Name          string
+	Scope         string
+	WorldID       string
+	Version       int
+	CreatedBy     string
+	CreatedAt     string
+	Archived      bool
+	ArchivedAt    string
 	ArchiveReason string
 }
 
@@ -248,7 +248,7 @@ func (s *Store) ArchiveAvatarAsset(id string) error {
 	return err
 }
 
-// MoveAvatarAssetToSet places an asset under a set ('' detaches it).
+// MoveAvatarAssetToSet places an asset under a set (” detaches it).
 func (s *Store) MoveAvatarAssetToSet(id, setID string) error {
 	_, err := s.db.Exec(`UPDATE avatar_assets SET set_id = ? WHERE id = ?`, setID, id)
 	return err
@@ -447,12 +447,12 @@ func (s *Store) UserClaims(userID string) (map[string][]string, error) {
 // AvatarRegistry is the cached governance snapshot.
 type AvatarRegistry struct {
 	mu     sync.RWMutex
-	assets map[string]*avatarAssetRow // id -> asset (active + archived)
-	sets   map[string]*avatarSetRow   // id -> set
-	items  map[string][]string        // setID -> "layer:optionId"
-	grants map[string][]avatarGrantRow // userID -> grants
+	assets map[string]*avatarAssetRow     // id -> asset (active + archived)
+	sets   map[string]*avatarSetRow       // id -> set
+	items  map[string][]string            // setID -> "layer:optionId"
+	grants map[string][]avatarGrantRow    // userID -> grants
 	claims map[string]map[string][]string // userID -> type -> values
-	worlds map[string]string          // worldID -> ownerID (world-scope check)
+	worlds map[string]string              // worldID -> ownerID (world-scope check)
 	loaded time.Time
 	err    error
 }
@@ -1074,10 +1074,10 @@ func (h *Hub) avatarCreateSet(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
 	var body struct {
-		Name    string     `json:"name"`
-		Scope   string     `json:"scope"`
-		WorldID string     `json:"worldId"`
-		Items   []setItem  `json:"items"`
+		Name    string    `json:"name"`
+		Scope   string    `json:"scope"`
+		WorldID string    `json:"worldId"`
+		Items   []setItem `json:"items"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "bad JSON"})

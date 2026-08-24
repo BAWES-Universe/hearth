@@ -1230,15 +1230,48 @@ body {
   left: 50%;
   transform: translateX(-50%);
   z-index: 30;
-  padding: 6px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  max-width: min(92vw, 340px);
+  padding: 10px 16px;
   font-size: 12px;
-  font-weight: 700;
   color: var(--muted);
   background: var(--panel);
   border: 1px solid var(--panel-border);
-  border-radius: 999px;
+  border-radius: 16px;
   backdrop-filter: blur(10px);
-  pointer-events: none;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+}
+
+.readonly-title {
+  font-weight: 800;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.readonly-sub {
+  font-size: 11px;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.readonly-claim {
+  margin-top: 4px;
+  padding: 7px 14px;
+  border: none;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  color: #14101f;
+  background: linear-gradient(100deg, var(--purple-soft), var(--amber));
+  cursor: pointer;
+  transition: transform 0.08s;
+}
+
+.readonly-claim:active {
+  transform: scale(0.95);
 }
 
 /* ------------------------------------------------------------ paint-mode UX */
@@ -1480,4 +1513,136 @@ body {
 .f-activity {
   font-size: 13px;
   color: var(--muted);
+}
+
+/* ------------------------------------------------------------ virtual joystick (mobile) */
+
+.joystick-zone {
+  position: absolute;
+  right: calc(20px + var(--safe-b));
+  bottom: calc(96px + var(--safe-b));
+  z-index: 12; /* above the editor overlay, below chat FAB */
+  width: 116px;
+  height: 116px;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.joystick-base {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: rgba(28, 22, 48, 0.5);
+  border: 1px solid rgba(255, 196, 107, 0.22);
+  box-shadow: 0 0 24px rgba(255, 107, 61, 0.18), inset 0 0 18px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(4px);
+}
+
+.joystick-base::after {
+  content: '';
+  position: absolute;
+  inset: 22px;
+  border-radius: 50%;
+  border: 1px dashed rgba(255, 196, 107, 0.18);
+}
+
+.joystick-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, rgba(255, 196, 107, 0.95), rgba(255, 107, 61, 0.85));
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), 0 0 18px rgba(255, 107, 61, 0.5);
+  transform: translate(-50%, -50%);
+  will-change: transform;
+  pointer-events: none;
+}
+
+/* ------------------------------------------------------------ WASD hint (desktop) */
+
+.keys-hint {
+  position: absolute;
+  left: 50%;
+  bottom: calc(64px + var(--safe-b));
+  transform: translateX(-50%);
+  z-index: 14;
+  padding: 8px 16px;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  backdrop-filter: blur(10px);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+  animation: keys-hint-fade 6s ease forwards;
+  pointer-events: none;
+}
+
+.keys-hint b {
+  color: var(--amber);
+}
+
+@keyframes keys-hint-fade {
+  0% { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  6% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  82% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ------------------------------------------------------------ ownership chip (HUD) */
+
+.world-owner-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 34vw;
+  padding: 5px 12px;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  backdrop-filter: blur(10px);
+  white-space: nowrap;
+}
+
+.owner-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 700;
+}
+
+.owner-role-label {
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+
+.owner-role-label.owner {
+  color: #14101f;
+  background: linear-gradient(100deg, var(--amber), var(--purple-soft));
+}
+
+.owner-role-label.co-builder {
+  color: #14101f;
+  background: rgba(255, 196, 107, 0.55);
+}
+
+.owner-role-label.viewer {
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* ------------------------------------------------------------ portal markers — bigger hit area */
+
+.portal-marker {
+  padding: 10px; /* transparent hit-area around the ring */
+  margin: -10px;
 }

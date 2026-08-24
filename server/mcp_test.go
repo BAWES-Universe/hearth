@@ -366,10 +366,10 @@ func TestMCPRoundTrip(t *testing.T) {
 		t.Fatalf("bot.run: status %d", code)
 	}
 	var br struct {
-		Applied int    `json:"applied"`
-		Ops     int    `json:"ops"`
+		Applied  int    `json:"applied"`
+		Ops      int    `json:"ops"`
 		FirstErr string `json:"firstErr"`
-		Actor   string `json:"actor"`
+		Actor    string `json:"actor"`
 	}
 	if err := json.Unmarshal([]byte(toolText(t, res)), &br); err != nil {
 		t.Fatalf("bot.run text: %v", err)

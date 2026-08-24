@@ -3,6 +3,7 @@ import {
   createInvite,
   createWorld,
   fetchSpace,
+  fetchWorldDoc,
   listWorlds,
   publishWorld,
   type WorldEntry,
@@ -25,6 +26,7 @@ import { JoinScreen } from './ui/JoinScreen';
 import { EditToolbar, type EditMode, type ObjectKind } from './ui/EditToolbar';
 import { WorldsDirectory } from './ui/WorldsDirectory';
 import { VoiceBubble } from './ui/VoiceBubble';
+import { VirtualJoystick } from './ui/VirtualJoystick';
 import { ByokPanel } from './ui/ByokPanel';
 import { VoiceManager, type VoicePeer, type VoiceState } from './net/voice';
 import { FriendsPanel } from './ui/FriendsPanel';
@@ -84,6 +86,23 @@ function deviceKey(): string {
   return k;
 }
 
+/** Coarse-pointer (touch) devices get the virtual joystick; desktop gets WASD. */
+function detectTouch(): boolean {
+  try {
+    return window.matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+  } catch {
+    return 'ontouchstart' in window;
+  }
+}
+const IS_TOUCH = typeof window !== 'undefined' ? detectTouch() : false;
+
+/** World ownership meta as served by GET /api/worlds/{id} (owner + role). */
+export interface WorldOwner {
+  id?: string;
+  name?: string;
+}
+export type WorldRole = 'owner' | 'editor' | 'viewer';
+
 export function App() {
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<WorldRenderer | null>(null);
@@ -110,6 +129,9 @@ export function App() {
   const [objectKind, setObjectKind] = useState<ObjectKind>('door');
   /** Server-arbitrated edit permission (welcome + spaces REST envelope). */
   const [canEdit, setCanEdit] = useState(true);
+  /** Ownership UI: who owns this world + the session's role on it. */
+  const [worldOwner, setWorldOwner] = useState<WorldOwner | null>(null);
+  const [myRole, setMyRole] = useState<WorldRole>('viewer');
   const [undoCount, setUndoCount] = useState(0);
   const [portals, setPortals] = useState<PortalMarker[]>([]);
   const [teleporting, setTeleporting] = useState(false);
@@ -117,6 +139,10 @@ export function App() {
   const [mineCount, setMineCount] = useState(0);
   /** One-time paint-mode onboarding bubble (dismissed → stored). */
   const [paintTip, setPaintTip] = useState(() => localStorage.getItem('hearth:paint-tip') !== '1');
+  /** One-time desktop hint: WASD to move (fades out, stored). */
+  const [keysHint, setKeysHint] = useState(
+    () => !IS_TOUCH && localStorage.getItem('hearth:keys-hint') !== '1',
+  );
 
   const [worlds, setWorlds] = useState<WorldEntry[]>([]);
   const [worldsLoading, setWorldsLoading] = useState(false);
@@ -150,6 +176,8 @@ export function App() {
   const toastTimer = useRef<number | null>(null);
   const sheetOpenRef = useRef(false);
   const worldsQueryRef = useRef('');
+  /** Bot-tap handler (assigned each render; renderer delegates through it). */
+  const onTapEntityRef = useRef<(id: string, name: string) => boolean>(() => false);
 
   modeRef.current = mode;
   brushRef.current = brush;
@@ -161,6 +189,15 @@ export function App() {
     setToast(t);
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 2600);
+  }, []);
+
+  /** Ownership meta for the HUD/readonly gate — owner name + session role. */
+  const loadWorldMeta = useCallback((spaceId: string) => {
+    void fetchWorldDoc(spaceId).then((doc) => {
+      if (!doc) return;
+      setWorldOwner(doc.owner ?? null);
+      setMyRole(doc.role ?? 'viewer');
+    });
   }, []);
 
   // ------------------------------------------------------------ routing
@@ -187,7 +224,10 @@ export function App() {
   useEffect(() => {
     const mount = mountRef.current;
     if (!mount) return;
-    const renderer = new WorldRenderer((m) => netRef.current?.sendMove(m.x, m.y, m.dir, m.seq));
+    const renderer = new WorldRenderer(
+      (m) => netRef.current?.sendMove(m.x, m.y, m.dir, m.seq),
+      (id, name) => onTapEntityRef.current(id, name),
+    );
     rendererRef.current = renderer;
     renderer.init(mount).catch((err) => console.error('[hearth] renderer init failed', err));
     return () => {
@@ -213,6 +253,79 @@ export function App() {
       window.removeEventListener('resize', update);
     };
   }, []);
+
+  // WASD / arrow keys — held-key directional movement on desktop. Feeds the
+  // renderer's move vector (same mechanism as the joystick), reported at 12Hz
+  // by the renderer's existing move loop. Arrows are prevented from scrolling.
+  useEffect(() => {
+    if (phase !== 'world' || view !== 'world') return;
+    const keys = new Set<string>();
+    const KEY_DIRS: Record<string, [number, number]> = {
+      KeyW: [0, -1],
+      ArrowUp: [0, -1],
+      KeyS: [0, 1],
+      ArrowDown: [0, 1],
+      KeyA: [-1, 0],
+      ArrowLeft: [-1, 0],
+      KeyD: [1, 0],
+      ArrowRight: [1, 0],
+    };
+    const apply = () => {
+      const r = rendererRef.current;
+      if (!r) return;
+      if (modeRef.current !== 'play') {
+        r.setMoveVector(0, 0);
+        return;
+      }
+      let vx = 0;
+      let vy = 0;
+      for (const [code, [dx, dy]] of Object.entries(KEY_DIRS)) {
+        if (keys.has(code)) {
+          vx += dx;
+          vy += dy;
+        }
+      }
+      const mag = Math.hypot(vx, vy);
+      r.setMoveVector(mag > 0 ? vx / mag : 0, mag > 0 ? vy / mag : 0);
+    };
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat) return; // held key — the Set already has it
+      if (!(e.code in KEY_DIRS)) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      e.preventDefault();
+      keys.add(e.code);
+      apply();
+    };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (!(e.code in KEY_DIRS)) return;
+      keys.delete(e.code);
+      apply();
+    };
+    const onBlur = () => {
+      keys.clear();
+      rendererRef.current?.setMoveVector(0, 0);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+      rendererRef.current?.setMoveVector(0, 0);
+    };
+  }, [phase, view]);
+
+  // leaving play mode (paint/portal/objects) stops any held movement
+  useEffect(() => {
+    if (mode !== 'play') rendererRef.current?.stopMove();
+  }, [mode]);
+
+  // voice bubble membership → green dots over those avatars (pulse on speech)
+  useEffect(() => {
+    rendererRef.current?.setVoicePeers(voicePeers.map((p) => p.id), speaking);
+  }, [voicePeers, speaking]);
 
   // ------------------------------------------------------------ friends
   const loadFriends = useCallback(async () => {
@@ -385,6 +498,7 @@ export function App() {
         r?.setSelf(selfIdRef.current, selfNameRef.current || 'you', { spec: specRef.current });
         if (typeof d.x === 'number' && typeof d.y === 'number') r?.setLocalPos(d.x, d.y);
         setSpaceName(target);
+        loadWorldMeta(target);
         // move the voice bubble to the new space (server re-joins the room)
         voiceRef.current?.enter(target);
         // keep the URL as the world's deep link (no reload)
@@ -400,7 +514,7 @@ export function App() {
         window.setTimeout(() => setTeleporting(false), 380);
       }
     },
-    [resetMine],
+    [resetMine, loadWorldMeta],
   );
 
   const joinInto = useCallback(
@@ -430,6 +544,7 @@ export function App() {
           if (sp) {
             lastSpaceRef.current = sp;
             setSpaceName(sp);
+            loadWorldMeta(sp);
             voiceRef.current?.enter(sp);
           }
           setPhase('world');
@@ -521,9 +636,10 @@ export function App() {
           const doc = w as { isPublished?: boolean };
           setIsPublished(doc.isPublished === true);
         }
+        loadWorldMeta(space);
       });
     },
-    [onEdit, handlePortalMsg, onFriendEvent, onFriendPresence],
+    [onEdit, handlePortalMsg, onFriendEvent, onFriendPresence, loadWorldMeta],
   );
 
   const join = useCallback(
@@ -730,6 +846,17 @@ export function App() {
     setSheetOpen(false);
   }, []);
 
+  // tap a bot → open proximity chat with it (bots hear proximity chat; the
+  // ambient wisps at least show the intent + a name). Consumes the tap so the
+  // player doesn't also walk to the bot.
+  onTapEntityRef.current = (id, name) => {
+    if (!rendererRef.current?.isBot(id)) return false;
+    setChannel('proximity');
+    openChat();
+    showToast(`👋 Say hi to ${name} — proximity chat reaches them`);
+    return true;
+  };
+
   const sendChat = useCallback(
     (text: string) => {
       const nonce = uuid();
@@ -761,6 +888,16 @@ export function App() {
     };
   }, [status]);
 
+  // one-time desktop WASD hint fades after 6s (stored so it shows once)
+  useEffect(() => {
+    if (!keysHint || phase !== 'world') return;
+    const t = window.setTimeout(() => {
+      localStorage.setItem('hearth:keys-hint', '1');
+      setKeysHint(false);
+    }, 6000);
+    return () => window.clearTimeout(t);
+  }, [keysHint, phase]);
+
   const inWorld = phase === 'world' && view === 'world';
 
   return (
@@ -771,6 +908,9 @@ export function App() {
           status={status}
           unread={unread}
           space={spaceName}
+          ownerName={worldOwner?.name}
+          role={myRole}
+          canEdit={canEdit}
           friendRequests={friends.filter((f) => f.status === 'requested').length}
           onOpenChat={openChat}
           onOpenWorlds={openWorlds}
@@ -787,6 +927,17 @@ export function App() {
           speaking={speaking}
           onToggleMic={() => void voiceRef.current?.toggleMic()}
         />
+      )}
+      {inWorld && mode === 'play' && IS_TOUCH && (
+        <VirtualJoystick
+          onVector={(x, y) => rendererRef.current?.setMoveVector(x, y)}
+          onRelease={() => rendererRef.current?.setMoveVector(0, 0)}
+        />
+      )}
+      {inWorld && mode === 'play' && keysHint && !IS_TOUCH && (
+        <div class="keys-hint" role="status">
+          ⌨️ <b>WASD</b> / arrow keys to move · click a portal to travel
+        </div>
       )}
       {inWorld && canEdit && (
         <EditToolbar
@@ -811,8 +962,16 @@ export function App() {
         />
       )}
       {inWorld && !canEdit && (
-        <div class="readonly-tag" role="status" title="This world is owned by someone else — you can explore but not edit">
-          👁 read-only — guest
+        <div class="readonly-tag" role="status">
+          <span class="readonly-title">👁 View-only</span>
+          <span class="readonly-sub">
+            {worldOwner?.name
+              ? `${worldOwner.name} owns this space — guests can explore but not paint.`
+              : 'Guests can explore but not paint here.'}
+          </span>
+          <button class="readonly-claim" onClick={openWorlds}>
+            ＋ Make your own space
+          </button>
         </div>
       )}
 

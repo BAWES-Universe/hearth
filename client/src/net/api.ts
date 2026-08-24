@@ -24,6 +24,10 @@ export interface WorldEntry {
   published_at?: string;
   created_at?: string;
   owner?: { id?: string; name?: string };
+  /** Caller's role on this world (GET /api/worlds/{id} only). */
+  role?: 'owner' | 'editor' | 'viewer';
+  /** Server-arbitrated edit permission (GET /api/worlds/{id}). */
+  canEdit?: boolean;
   headcount?: number;
   gravity?: { love?: number; reach?: number; momentum?: number; gravity?: number };
   thumbnail?: unknown;
