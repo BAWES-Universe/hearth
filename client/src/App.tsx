@@ -24,6 +24,7 @@ import { JoinScreen } from './ui/JoinScreen';
 import { EditToolbar, type EditMode } from './ui/EditToolbar';
 import { WorldsDirectory } from './ui/WorldsDirectory';
 import { VoiceBubble } from './ui/VoiceBubble';
+import { ByokPanel } from './ui/ByokPanel';
 import { VoiceManager, type VoicePeer, type VoiceState } from './net/voice';
 import { FriendsPanel } from './ui/FriendsPanel';
 import { loadSpec, type AvatarSpec } from './avatar/spec';
@@ -126,6 +127,7 @@ export function App() {
   // handlers, which are built once per join).
   const [friends, setFriends] = useState<FriendEntry[]>([]);
   const [friendsOpen, setFriendsOpen] = useState(false);
+  const [byokOpen, setByokOpen] = useState(false);
   const friendsOpenRef = useRef(false);
 
   // refs mirroring state for stable closures (rAF loops, ws handlers)
@@ -719,8 +721,10 @@ export function App() {
           onOpenChat={openChat}
           onOpenWorlds={openWorlds}
           onOpenFriends={openFriends}
+          onOpenByok={() => setByokOpen(true)}
         />
       )}
+      <ByokPanel open={byokOpen} onClose={() => setByokOpen(false)} />
       {inWorld && (
         <VoiceBubble
           state={voiceState}
