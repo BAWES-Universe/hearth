@@ -101,6 +101,24 @@ func (s *Store) migrate() error {
 			ts TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_space ON messages(space_id, ts)`,
+		// --- analytics (v0, ox-decided: scrubbed intake + per-space-hour op
+		// counters; the daily pulse reads these two tables only) ---
+		`CREATE TABLE IF NOT EXISTS analytics_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			props TEXT NOT NULL DEFAULT '{}',
+			session_id TEXT NOT NULL DEFAULT '',
+			user_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_analytics_events_created ON analytics_events(created_at)`,
+		`CREATE TABLE IF NOT EXISTS analytics_op_counters (
+			space_id TEXT NOT NULL,
+			hour TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			count INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (space_id, hour, kind)
+		)`,
 		// --- HMF v1 (docs/HMF-v1.md) ---
 		// Chunked tile storage: one row per 16x16 chunk, RLE-encoded, with a
 		// per-chunk revision counter for AOI fetch + refetch/replay.

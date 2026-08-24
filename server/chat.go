@@ -211,6 +211,12 @@ func (c *Client) handleEdit(msg map[string]any) {
 		c.sendError("edit_rejected", ack.Err)
 		return
 	}
+	// Analytics: per-space per-hour op counter (high-volume aggregation —
+	// N paint ops in an hour = 1 counter row, never N event rows). Only
+	// counted after a successful apply.
+	if err := c.hub.store.BumpOpCounter(sp.World.ID, op.Op); err != nil {
+		log.Printf("bump op counter %s: %v", sp.World.ID, err)
+	}
 	// Append-only op_log (build history / undo trail). A failed append is
 	// logged — the op is already applied with a valid seq, so the ack must
 	// not claim failure.
