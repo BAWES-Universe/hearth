@@ -397,6 +397,12 @@ func (c *Client) handleJoin(msg map[string]any) {
 	// gravity/audit: presence event (Reach = unique visitors)
 	c.hub.emitActivity(spaceID, sess.UserID, "member", "presence", "join", spaceID,
 		diffJSON(map[string]any{"name": e.Name, "x": e.X, "y": e.Y}), sanitizeIP(c.conn.RemoteAddr().String()))
+	// T2 social: announce the join to the user's accepted friends (additive
+	// {t:'friend_presence'} envelope, docs/SOCIAL.md)
+	c.hub.notifyFriendPresence(sess.UserID, map[string]any{
+		"event": "join", "userId": sess.UserID, "name": e.Name,
+		"online": true, "spaceId": spaceID,
+	})
 	log.Printf("join: %s (%s) -> %s @ %d,%d", e.Name, sess.ID[:8], spaceID, e.X, e.Y)
 }
 
@@ -477,10 +483,19 @@ func (c *Client) handlePortal(msg map[string]any) {
 		"portalId": p.ID,
 		"spaceId":  p.TargetSpace, "x": p.TargetX, "y": p.TargetY,
 	})
+	// T2 social: friends see the space change (leave old, join new)
 	actor := ""
 	if c.Session != nil {
 		actor = c.Session.UserID
 	}
+	c.hub.notifyFriendPresence(actor, map[string]any{
+		"event": "leave", "userId": actor, "name": c.Entity.Name,
+		"online": true, "spaceId": oldSpace,
+	})
+	c.hub.notifyFriendPresence(actor, map[string]any{
+		"event": "join", "userId": actor, "name": c.Entity.Name,
+		"online": true, "spaceId": p.TargetSpace,
+	})
 	c.hub.emitActivity(p.TargetSpace, actor, "member", "nav", "portal", p.TargetSpace,
 		diffJSON(map[string]any{"portalId": p.ID, "from": oldSpace, "x": p.TargetX, "y": p.TargetY}),
 		sanitizeIP(c.conn.RemoteAddr().String()))

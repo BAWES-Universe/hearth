@@ -1301,3 +1301,118 @@ body {
     width: min(92vw, 320px);
   }
 }
+
+/* ------------------------------------------------------------ friends panel (T2 social) */
+
+/* friends FAB stacks above the chat FAB (58px + 12px gap) */
+.friends-fab {
+  bottom: calc(22px + 58px + 12px + var(--safe-b));
+}
+
+.f-tab {
+  flex: 1;
+  overflow-y: auto;
+  padding: 10px 14px 16px;
+  -webkit-overflow-scrolling: touch;
+}
+
+.f-list {
+  list-style: none;
+  margin: 0 0 6px;
+  padding: 0;
+}
+
+.f-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 2px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 14px;
+}
+
+.f-row:last-child {
+  border-bottom: none;
+}
+
+.f-dot {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #3a3346;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.06) inset;
+}
+
+.f-dot.online {
+  background: #34d399;
+  box-shadow: 0 0 8px rgba(52, 211, 153, 0.7);
+}
+
+.f-dot.pending {
+  background: var(--amber);
+  opacity: 0.7;
+}
+
+.f-dot.friend {
+  background: var(--purple-soft);
+}
+
+.f-name {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.25;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.f-sub {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.f-friend-tag {
+  flex: none;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--purple-soft);
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
+.f-action {
+  flex: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 6px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.f-action.primary {
+  background: linear-gradient(135deg, var(--purple-soft), var(--amber));
+  color: #14101f;
+  border: none;
+  font-weight: 700;
+}
+
+.f-section-title {
+  margin: 14px 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.f-activity {
+  font-size: 13px;
+  color: var(--muted);
+}

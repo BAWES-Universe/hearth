@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { env, type ChatMsg, type Envelope, type MediaSignalMsg } from './protocol';
+import { env, type ChatMsg, type Envelope, type FriendMsg, type FriendPresenceMsg, type MediaSignalMsg } from './protocol';
 
 // Wire protocol v0 is FROZEN (PROTOCOL.md). These tests pin the envelope
 // contract — any protocol change MUST update PROTOCOL.md + this file in the
@@ -77,5 +77,42 @@ describe('media envelopes (T2, additive — docs/MEDIA.md)', () => {
       space: 'garden',
       peers: [{ id: 'u1', name: 'Alice' }],
     });
+  });
+});
+
+// T2 social layer — ADDITIVE envelopes (docs/SOCIAL.md). PROTOCOL.md v0 is
+// untouched; these pin the new server->client shapes so a server/client
+// contract split cannot silently break the friends panel.
+describe('social envelopes (T2 additive)', () => {
+  it('{t:friend} request frame matches the server shape', () => {
+    const frame: Envelope = JSON.parse(
+      '{"v":1,"t":"friend","id":"m1","ts":1700000000000,"d":{"event":"request","userId":"u2","name":"Bob","status":"requested"}}',
+    );
+    expect(frame.t).toBe('friend');
+    const d = frame.d as FriendMsg;
+    expect(d.event).toBe('request');
+    expect(d.userId).toBe('u2');
+    expect(d.name).toBe('Bob');
+    expect(d.status).toBe('requested');
+  });
+
+  it('{t:friend_presence} join frame matches the server shape', () => {
+    const frame: Envelope = JSON.parse(
+      '{"v":1,"t":"friend_presence","id":"m2","ts":1700000000000,"d":{"event":"join","userId":"u2","name":"Bob","online":true,"spaceId":"town-square"}}',
+    );
+    expect(frame.t).toBe('friend_presence');
+    const d = frame.d as FriendPresenceMsg;
+    expect(d.event).toBe('join');
+    expect(d.online).toBe(true);
+    expect(d.spaceId).toBe('town-square');
+  });
+
+  it('{t:friend_presence} offline frame carries online:false', () => {
+    const frame: Envelope = JSON.parse(
+      '{"v":1,"t":"friend_presence","id":"m3","ts":1700000000000,"d":{"event":"offline","userId":"u2","name":"Bob","online":false,"spaceId":""}}',
+    );
+    const d = frame.d as FriendPresenceMsg;
+    expect(d.event).toBe('offline');
+    expect(d.online).toBe(false);
   });
 });

@@ -2,7 +2,7 @@
 // exponential backoff + jitter, re-join on open (server re-sends welcome →
 // client resyncs full state).
 
-import { env, type BotMsg, type ChatMsg, type EditMsg, type EditOut, type ErrMsg, type MediaSignalMsg, type MediaStateMsg, type PortalMsg, type StateEntry, type Welcome } from './protocol';
+import { env, type BotMsg, type ChatMsg, type EditMsg, type EditOut, type ErrMsg, type FriendMsg, type FriendPresenceMsg, type MediaSignalMsg, type MediaStateMsg, type PortalMsg, type StateEntry, type Welcome } from './protocol';
 import type { AvatarInfo } from '../avatar/spec';
 
 export type NetStatus = 'connecting' | 'online' | 'reconnecting' | 'offline';
@@ -27,6 +27,8 @@ export interface NetHandlers {
   onBotMsg?(d: BotMsg): void;
   onMediaSignal?(d: MediaSignalMsg): void;
   onMediaState?(d: MediaStateMsg): void;
+  onFriend?(d: FriendMsg): void;
+  onFriendPresence?(d: FriendPresenceMsg): void;
 }
 
 const BASE_DELAY = 500;
@@ -133,6 +135,12 @@ export class Net {
         break;
       case 'media_state':
         this.h.onMediaState?.((msg.d ?? {}) as MediaStateMsg);
+        break;
+      case 'friend':
+        this.h.onFriend?.((msg.d ?? {}) as FriendMsg);
+        break;
+      case 'friend_presence':
+        this.h.onFriendPresence?.((msg.d ?? {}) as FriendPresenceMsg);
         break;
       default:
         break;

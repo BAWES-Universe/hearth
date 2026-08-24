@@ -384,6 +384,11 @@ func (h *Hub) removeClient(c *Client) {
 		h.dropBubble(ent.ID)
 		c.setEntity(nil)
 		c.setSpace("")
+		// T2 social: friends learn the user went offline
+		h.notifyFriendPresence(ent.UserID, map[string]any{
+			"event": "offline", "userId": ent.UserID, "name": ent.Name,
+			"online": false, "spaceId": "",
+		})
 	}
 }
 

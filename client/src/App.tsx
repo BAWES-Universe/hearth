@@ -6,10 +6,18 @@ import {
   publishWorld,
   type WorldEntry,
 } from './net/api';
+import {
+  addFriend,
+  ensureSession,
+  listFriends,
+  removeFriend,
+  respondFriend,
+  type FriendEntry,
+} from './net/friends';
 import { resolveSpaceId, wsUrl } from './net/config';
 import { Net, type NetStatus } from './net/ws';
 import { WorldRenderer } from './world/renderer';
-import { uuid, type EditMsg, type PortalMsg, type PortalPayload } from './net/protocol';
+import { uuid, type EditMsg, type FriendMsg, type FriendPresenceMsg, type PortalMsg, type PortalPayload } from './net/protocol';
 import { ChatSheet, type ChatMessage } from './ui/ChatSheet';
 import { Hud } from './ui/Hud';
 import { JoinScreen } from './ui/JoinScreen';
@@ -17,6 +25,7 @@ import { EditToolbar, type EditMode } from './ui/EditToolbar';
 import { WorldsDirectory } from './ui/WorldsDirectory';
 import { VoiceBubble } from './ui/VoiceBubble';
 import { VoiceManager, type VoicePeer, type VoiceState } from './net/voice';
+import { FriendsPanel } from './ui/FriendsPanel';
 import { loadSpec, type AvatarSpec } from './avatar/spec';
 
 type Phase = 'join' | 'loading' | 'world';
@@ -113,6 +122,11 @@ export function App() {
   const [voicePeers, setVoicePeers] = useState<VoicePeer[]>([]);
   const [micOn, setMicOn] = useState(false);
   const [speaking, setSpeaking] = useState(false);
+  // T2 social: friends list + panel visibility (mirrored in refs for the WS
+  // handlers, which are built once per join).
+  const [friends, setFriends] = useState<FriendEntry[]>([]);
+  const [friendsOpen, setFriendsOpen] = useState(false);
+  const friendsOpenRef = useRef(false);
 
   // refs mirroring state for stable closures (rAF loops, ws handlers)
   const modeRef = useRef<EditMode>('play');
@@ -188,6 +202,78 @@ export function App() {
       window.removeEventListener('resize', update);
     };
   }, []);
+
+  // ------------------------------------------------------------ friends
+  const loadFriends = useCallback(async () => {
+    const fs = await listFriends();
+    setFriends(fs);
+  }, []);
+
+  const openFriends = useCallback(() => {
+    friendsOpenRef.current = true;
+    setFriendsOpen(true);
+    void loadFriends();
+  }, [loadFriends]);
+  const closeFriends = useCallback(() => {
+    friendsOpenRef.current = false;
+    setFriendsOpen(false);
+  }, []);
+
+  const onAddFriend = useCallback(
+    async (id: string) => {
+      const ok = await addFriend(id);
+      showToast(ok ? 'Friend request sent' : 'Could not send request');
+      void loadFriends();
+    },
+    [loadFriends, showToast],
+  );
+  const onAcceptFriend = useCallback(
+    async (id: string) => {
+      const ok = await respondFriend(id, 'accept');
+      showToast(ok ? 'Friend added 🎉' : 'Could not accept');
+      void loadFriends();
+    },
+    [loadFriends, showToast],
+  );
+  const onDeclineFriend = useCallback(
+    async (id: string) => {
+      await respondFriend(id, 'decline');
+      void loadFriends();
+    },
+    [loadFriends],
+  );
+  const onRemoveFriend = useCallback(
+    async (id: string) => {
+      await removeFriend(id);
+      showToast('Friend removed');
+      void loadFriends();
+    },
+    [loadFriends, showToast],
+  );
+
+  const onFriendEvent = useCallback(
+    (d: FriendMsg) => {
+      if (d.event === 'request') {
+        showToast(`New friend request from ${d.name ?? 'someone'}`);
+      }
+      void loadFriends();
+    },
+    [loadFriends, showToast],
+  );
+
+  const onFriendPresence = useCallback(
+    (d: FriendPresenceMsg) => {
+      const id = d.userId;
+      if (!id) return;
+      setFriends((prev) =>
+        prev.map((f) => (f.friendId === id ? { ...f, online: !!d.online, space: d.spaceId } : f)),
+      );
+      if (d.event === 'join' && d.spaceId === lastSpaceRef.current && !friendsOpenRef.current) {
+        showToast(`${d.name ?? 'A friend'} joined this space`);
+      }
+    },
+    [showToast],
+  );
 
   // ------------------------------------------------------------ net
   const recordUndo = useCallback((d: EditMsg) => {
@@ -378,6 +464,8 @@ export function App() {
         },
         onMediaSignal: (d) => voiceRef.current?.handleSignal(d),
         onMediaState: (d) => voiceRef.current?.handleState(d),
+        onFriend: onFriendEvent,
+        onFriendPresence,
       });
       netRef.current = net;
       voiceRef.current?.leave(); // drop any stale bubble from a previous net
@@ -388,6 +476,11 @@ export function App() {
         onSpeaking: (sp) => setSpeaking(sp),
       });
       net.connect({ name, lang: 'en', space, guest: true, deviceKey: deviceKey(), avatar: { spec } });
+
+      // T2 social: ensure the session cookie exists (REST friends calls need
+      // it — the WS handshake authenticates in-band without setting it), then
+      // load the friend list.
+      void ensureSession(deviceKey(), name).then(() => loadFriends());
 
       // early world fetch → tiles + portals render before welcome arrives
       void fetchSpace(space).then((sp) => {
@@ -402,7 +495,7 @@ export function App() {
         }
       });
     },
-    [onEdit, handlePortalMsg],
+    [onEdit, handlePortalMsg, onFriendEvent, onFriendPresence],
   );
 
   const join = useCallback(
@@ -609,7 +702,15 @@ export function App() {
     <div class="app">
       <div ref={mountRef} class="world-mount" />
       {inWorld && (
-        <Hud status={status} unread={unread} space={spaceName} onOpenChat={openChat} onOpenWorlds={openWorlds} />
+        <Hud
+          status={status}
+          unread={unread}
+          space={spaceName}
+          friendRequests={friends.filter((f) => f.status === 'requested').length}
+          onOpenChat={openChat}
+          onOpenWorlds={openWorlds}
+          onOpenFriends={openFriends}
+        />
       )}
       {inWorld && (
         <VoiceBubble
@@ -700,6 +801,17 @@ export function App() {
         onChannel={setChannel}
         messages={messages}
         onSend={sendChat}
+      />
+
+      <FriendsPanel
+        open={friendsOpen}
+        onClose={closeFriends}
+        friends={friends}
+        currentSpace={lastSpaceRef.current}
+        onAdd={onAddFriend}
+        onAccept={onAcceptFriend}
+        onDecline={onDeclineFriend}
+        onRemove={onRemoveFriend}
       />
 
       {teleporting && (

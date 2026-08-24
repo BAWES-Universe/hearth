@@ -147,3 +147,25 @@ export interface MediaStateMsg {
   space?: string;
   peers?: MediaPeer[];
 }
+
+// T2 social layer (docs/SOCIAL.md) — ADDITIVE envelopes, PROTOCOL.md frozen
+// contract untouched. {t:'friend'} = a friend-relation status changed for me;
+// {t:'friend_presence'} = a friend joined/left a space or went offline/online.
+export type FriendEvent = 'request' | 'accept' | 'decline' | 'remove';
+
+export interface FriendMsg {
+  event?: FriendEvent;
+  userId?: string;
+  name?: string;
+  status?: 'pending' | 'requested' | 'accepted';
+}
+
+export type FriendPresenceEvent = 'join' | 'leave' | 'offline';
+
+export interface FriendPresenceMsg {
+  event?: FriendPresenceEvent;
+  userId?: string;
+  name?: string;
+  online?: boolean;
+  spaceId?: string;
+}

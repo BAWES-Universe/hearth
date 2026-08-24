@@ -81,6 +81,9 @@ func main() {
 	mux.HandleFunc("/api/worlds/", hub.handleWorldRoute)
 	mux.HandleFunc("/api/bots", hub.handleBots)
 	mux.HandleFunc("/api/bots/", hub.handleBotStatus)
+	mux.HandleFunc("/api/friends", hub.handleFriends)
+	mux.HandleFunc("/api/friends/", hub.handleFriendRoute)
+	mux.HandleFunc("/api/users", hub.handleUsers)
 	mux.HandleFunc("/ws", hub.handleWS)
 	hub.RegisterAdminRoutes(mux) // S9: /api/admin/* + embedded /admin console
 	// T2: Model Context Protocol — streamable HTTP JSON-RPC endpoint for AI
