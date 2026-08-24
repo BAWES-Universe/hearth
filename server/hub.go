@@ -16,6 +16,16 @@ const (
 	botsPerSpace   = 2
 )
 
+// Avatar is the visual identity broadcast with join/welcome/state. Legacy
+// color+icon remains for old clients; Spec carries the layered avatar_spec
+// (T1) that all viewers render identically. Sent with join, echoed in welcome,
+// broadcast in state/roster.
+type Avatar struct {
+	Color string      `json:"color,omitempty"`
+	Icon  string      `json:"icon,omitempty"`
+	Spec  *AvatarSpec `json:"spec,omitempty"`
+}
+
 // Entity is a live presence in a space (player or ambient bot). Positions are
 // RAM-only — never persisted. Coordinate reads/writes are synchronized via the
 // owning SpaceState/hash locks; snapshot copies are handed out to consumers.
@@ -25,6 +35,7 @@ type Entity struct {
 	X, Y      int
 	Dir       string
 	Bot       bool
+	Avatar    Avatar
 	UserID    string
 	SessionID string
 	Client    *Client // set once at creation, never mutated afterwards
@@ -38,17 +49,19 @@ type EntitySnap struct {
 	X, Y   int
 	Dir    string
 	Bot    bool
+	Avatar Avatar
 	Client *Client
 }
 
 func (e *EntitySnap) PublicJSON() map[string]any {
 	return map[string]any{
-		"id":   e.ID,
-		"name": e.Name,
-		"x":    e.X,
-		"y":    e.Y,
-		"dir":  e.Dir,
-		"bot":  e.Bot,
+		"id":     e.ID,
+		"name":   e.Name,
+		"x":      e.X,
+		"y":      e.Y,
+		"dir":    e.Dir,
+		"bot":    e.Bot,
+		"avatar": e.Avatar,
 	}
 }
 
@@ -151,7 +164,7 @@ func (sh *SpatialHash) Nearby(x, y, radius int, skip string) []*EntitySnap {
 				if dx*dx+dy*dy <= radius*radius {
 					out = append(out, &EntitySnap{
 						ID: e.ID, Name: e.Name, X: e.X, Y: e.Y,
-						Dir: e.Dir, Bot: e.Bot, Client: e.Client,
+						Dir: e.Dir, Bot: e.Bot, Avatar: e.Avatar, Client: e.Client,
 					})
 				}
 			}
@@ -173,6 +186,11 @@ func NewSpaceState(w *World) *SpaceState {
 	// ambient presence sim: a couple of wandering wisps per space
 	names := []string{"Wisp", "Ember"}
 	for i := 0; i < botsPerSpace; i++ {
+		botSpec := robotAvatarSpec(i)
+		botColor := "#fb923c"
+		if i%2 == 0 {
+			botColor = "#a78bfa"
+		}
 		b := &Entity{
 			ID:   "bot-" + w.ID + "-" + itoa(i+1),
 			Name: names[i%len(names)],
@@ -180,6 +198,11 @@ func NewSpaceState(w *World) *SpaceState {
 			Y:    w.Spawn.Y + i*2,
 			Dir:  "down",
 			Bot:  true,
+			Avatar: Avatar{
+				Color: botColor,
+				Icon:  "✦",
+				Spec:  &botSpec,
+			},
 		}
 		sp.AddEntity(b)
 	}
@@ -245,7 +268,7 @@ func (sp *SpaceState) EntitySnaps() []*EntitySnap {
 	for _, e := range sp.entities {
 		out = append(out, &EntitySnap{
 			ID: e.ID, Name: e.Name, X: e.X, Y: e.Y,
-			Dir: e.Dir, Bot: e.Bot, Client: e.Client,
+			Dir: e.Dir, Bot: e.Bot, Avatar: e.Avatar, Client: e.Client,
 		})
 	}
 	return out
@@ -424,10 +447,11 @@ func (h *Hub) moveBots() {
 // --- client-side state coalescing ---
 
 type entityPos struct {
-	Name string
-	X, Y int
-	Dir  string
-	Bot  bool
+	Name   string
+	X, Y   int
+	Dir    string
+	Bot    bool
+	Avatar Avatar
 }
 
 // shouldSendState coalesces: send only when the AOI entity set changed or the
@@ -443,7 +467,7 @@ func (c *Client) shouldSendState(spaceID string, near []*EntitySnap, now time.Ti
 	snap := map[string]entityPos{}
 	changed := false
 	for _, e := range near {
-		p := entityPos{Name: e.Name, X: e.X, Y: e.Y, Dir: e.Dir, Bot: e.Bot}
+		p := entityPos{Name: e.Name, X: e.X, Y: e.Y, Dir: e.Dir, Bot: e.Bot, Avatar: e.Avatar}
 		snap[e.ID] = p
 		if old, ok := c.lastEntities[e.ID]; !ok || old != p {
 			changed = true

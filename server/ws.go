@@ -4,11 +4,16 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"regexp"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 )
+
+// hexColorRe matches the only accepted legacy avatar color shape (#rrggbb).
+var hexColorRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
 
 const (
 	wsReadLimit    = 64 * 1024
@@ -277,7 +282,9 @@ func (c *Client) handleJoin(msg map[string]any) {
 		spaceID = getString(msg, "space") // client sends "space"
 	}
 	if spaceID == "" {
-		spaceID = "hearth"
+		// Universal spawn: '/' (no spaceId) routes to town-square — the one
+		// world every visitor enters. No map picker, no room-of-the-day.
+		spaceID = "town-square"
 	}
 
 	c.mu.Lock()
@@ -338,6 +345,33 @@ func (c *Client) handleJoin(msg map[string]any) {
 	if e.Name == "" {
 		e.Name = "Guest-" + sess.ID[:4]
 	}
+	// Avatar: layered avatar_spec (validated + persisted per member) with
+	// legacy color/icon fallback for old clients. Incoming spec wins; else the
+	// member's stored spec; else a device-key default. The legacy color/icon
+	// are echoed to every peer in welcome/roster/state, so they are validated
+	// here (the layered spec is validated by resolveAvatarSpec).
+	if a, ok := msg["avatar"].(map[string]any); ok {
+		if spec := parseAvatarSpec(a); spec != nil {
+			s := resolveAvatarSpec(sess.UserID, spec)
+			e.Avatar.Spec = &s
+		}
+		if col := getString(a, "color"); hexColorRe.MatchString(col) {
+			e.Avatar.Color = col
+		}
+		if icon := getString(a, "icon"); utf8.RuneCountInString(icon) <= 2 {
+			e.Avatar.Icon = icon
+		}
+	}
+	if e.Avatar.Spec == nil {
+		s := resolveAvatarSpec(sess.UserID, nil)
+		e.Avatar.Spec = &s
+	}
+	if e.Avatar.Color == "" {
+		e.Avatar.Color = defaultAvatarColor(e.Name)
+	}
+	if e.Avatar.Icon == "" {
+		e.Avatar.Icon = "🙂"
+	}
 	sp.AddEntity(e)
 	c.setEntity(e)
 	c.setSpace(spaceID)
@@ -351,9 +385,24 @@ func (c *Client) handleJoin(msg map[string]any) {
 	c.emit("welcome", map[string]any{
 		"sessionId": sess.ID, "selfId": e.ID, "entityId": e.ID,
 		"spaceId": spaceID, "name": e.Name, "x": e.X, "y": e.Y, "dir": e.Dir,
-		"world": sp.World.GeoJSON(),
+		"avatar": e.Avatar,
+		"world":  sp.World.GeoJSON(),
 	})
+	// gravity/audit: presence event (Reach = unique visitors)
+	c.hub.emitActivity(spaceID, sess.UserID, "member", "presence", "join", spaceID,
+		diffJSON(map[string]any{"name": e.Name, "x": e.X, "y": e.Y}), sanitizeIP(c.conn.RemoteAddr().String()))
 	log.Printf("join: %s (%s) -> %s @ %d,%d", e.Name, sess.ID[:8], spaceID, e.X, e.Y)
+}
+
+// defaultAvatarColor derives a stable accent from a name when the client did
+// not send one (mirrors the client's per-name tinting).
+func defaultAvatarColor(name string) string {
+	cols := []string{"#8b5cf6", "#22d3ee", "#f472b6", "#4ade80", "#fb923c", "#e879f9", "#60a5fa", "#facc15"}
+	h := 0
+	for i := 0; i < len(name); i++ {
+		h = (h*31 + int(name[i])) & 0x7fffffff
+	}
+	return cols[h%len(cols)]
 }
 
 func (c *Client) handleMove(msg map[string]any) {
@@ -404,6 +453,14 @@ func (c *Client) handlePortal(msg map[string]any) {
 		c.sendError("portal_broken", "portal target space missing: "+p.TargetSpace)
 		return
 	}
+	// Portal routing by world id: only published worlds (or town-square hub)
+	// are reachable destinations. Draft owners may still enter their own
+	// unpublished world to test it. The predicate FAILS CLOSED: a worldMeta
+	// error denies the traversal instead of silently allowing it.
+	if !c.hub.portalTargetAllowed(p.TargetSpace, c.sessionUserID()) {
+		c.sendError("portal_broken", "portal target world not published: "+p.TargetSpace)
+		return
+	}
 	oldSpace := c.spaceID
 	sp.RemoveEntity(c.Entity)
 	target.AddEntity(c.Entity)
@@ -414,7 +471,36 @@ func (c *Client) handlePortal(msg map[string]any) {
 		"portalId": p.ID,
 		"spaceId":  p.TargetSpace, "x": p.TargetX, "y": p.TargetY,
 	})
+	actor := ""
+	if c.Session != nil {
+		actor = c.Session.UserID
+	}
+	c.hub.emitActivity(p.TargetSpace, actor, "member", "nav", "portal", p.TargetSpace,
+		diffJSON(map[string]any{"portalId": p.ID, "from": oldSpace, "x": p.TargetX, "y": p.TargetY}),
+		sanitizeIP(c.conn.RemoteAddr().String()))
 	log.Printf("portal: %s used %s %s -> %s (%d,%d)", c.Entity.Name, oldSpace, p.ID, p.TargetSpace, p.TargetX, p.TargetY)
+}
+
+// portalTargetAllowed is the handlePortal routing rule, exported so tests
+// assert the PRODUCTION predicate (a test-local copy could diverge silently).
+// Fails closed: a worldMeta lookup error denies the traversal.
+func (h *Hub) portalTargetAllowed(targetID, userID string) bool {
+	meta, err := h.store.worldMeta(targetID)
+	if err != nil {
+		return false
+	}
+	if meta.IsPublished {
+		return true
+	}
+	return userID != "" && meta.OwnerID == userID
+}
+
+// sessionUserID returns the authenticated user id ("" when anonymous).
+func (c *Client) sessionUserID() string {
+	if c.Session == nil {
+		return ""
+	}
+	return c.Session.UserID
 }
 
 func (c *Client) handleSignal(msg map[string]any) {

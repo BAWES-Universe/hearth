@@ -1,11 +1,23 @@
 import { useState } from 'preact/hooks';
+import { AvatarBuilder } from '../avatar/AvatarBuilder';
+import { loadSpec, saveSpec, type AvatarSpec } from '../avatar/spec';
 
-export function JoinScreen({ onJoin, initial }: { onJoin(name: string): void; initial: string }) {
+export function JoinScreen({
+  onJoin,
+  initial,
+}: {
+  onJoin(name: string, avatar: AvatarSpec): void;
+  initial: string;
+}) {
   const [name, setName] = useState(initial);
+  const [avatar, setAvatar] = useState<AvatarSpec>(() => loadSpec());
   const submit = (e: Event) => {
     e.preventDefault();
     const n = name.trim();
-    if (n) onJoin(n);
+    if (n) {
+      saveSpec(avatar);
+      onJoin(n, avatar);
+    }
   };
   return (
     <div class="join">
@@ -31,11 +43,12 @@ export function JoinScreen({ onJoin, initial }: { onJoin(name: string): void; in
             enterkeyhint="go"
             autocomplete="nickname"
           />
+          <AvatarBuilder value={avatar} onChange={setAvatar} />
           <button class="join-btn" type="submit" disabled={!name.trim()}>
             Enter
           </button>
         </form>
-        <p class="join-hint">Guest-first — no account needed.</p>
+        <p class="join-hint">Guest-first — no account needed. Mix layers, then save your look.</p>
       </div>
     </div>
   );
