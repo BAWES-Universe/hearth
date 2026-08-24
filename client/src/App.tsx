@@ -420,30 +420,35 @@ export function App() {
         onChat: (d) => {
           const from = d.from ?? '?';
           const ch: 'proximity' | 'space' | 'global' = d.channel === 'space' ? 'space' : d.channel === 'global' ? 'global' : 'proximity';
+          const fromId = d.fromId ?? from;
           // proximity chat from others → speech bubble above their avatar
-          if (ch === 'proximity' && from !== selfIdRef.current) {
-            rendererRef.current?.showBubble(from, d.text);
+          if (ch === 'proximity' && fromId !== selfIdRef.current) {
+            rendererRef.current?.showBubble(fromId, d.text);
           }
           setMessages((prev) => {
-            if (from === selfIdRef.current) {
-              const idx = prev.findIndex((m) => m.self && m.pending && m.channel === ch && m.text === d.text);
+            // echo of our own message: match by nonce (exact) or pending+text+channel
+            if (fromId === selfIdRef.current) {
+              const idx = prev.findIndex((m) =>
+                m.self && m.pending && m.channel === ch &&
+                (d.nonce ? m.id === d.nonce : m.text === d.text),
+              );
               if (idx >= 0) {
                 const copy = prev.slice();
-                copy[idx] = { ...copy[idx], pending: false };
+                copy[idx] = { ...copy[idx], pending: false, id: d.nonce ?? copy[idx].id };
                 return copy;
               }
             }
             const msg: ChatMessage = {
-              id: `${d.ts}-${from}-${d.seq ?? Math.random().toString(36).slice(2, 8)}`,
+              id: d.nonce ?? `${d.ts}-${fromId}-${d.seq ?? Math.random().toString(36).slice(2, 8)}`,
               channel: ch,
               from,
               text: d.text,
               ts: d.ts ?? Date.now(),
-              self: from === selfIdRef.current,
+              self: fromId === selfIdRef.current,
             };
             return [...prev, msg];
           });
-          if (from !== selfIdRef.current && !sheetOpenRef.current) {
+          if (fromId !== selfIdRef.current && !sheetOpenRef.current) {
             setUnread((u) => u + 1);
           }
         },

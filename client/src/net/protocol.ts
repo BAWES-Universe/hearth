@@ -61,9 +61,10 @@ export interface StateEntry {
 export interface ChatMsg {
   channel?: 'proximity' | 'space' | 'global' | 'dm';
   from?: string;
+  fromId?: string;
+  nonce?: string;
   text: string;
   seq?: number;
-  nonce?: string;
   ts?: number;
 }
 
