@@ -13,3 +13,4 @@ hearth
 *.pat
 .env
 or_key.txt
+client/node_modules
