@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 	"syscall"
 	"time"
+
+	"hearth/mcp"
 )
 
 //go:embed all:dist
@@ -81,6 +83,10 @@ func main() {
 	mux.HandleFunc("/api/bots/", hub.handleBotStatus)
 	mux.HandleFunc("/ws", hub.handleWS)
 	hub.RegisterAdminRoutes(mux) // S9: /api/admin/* + embedded /admin console
+	// T2: Model Context Protocol — streamable HTTP JSON-RPC endpoint for AI
+	// agents (world read/edit/chat/bot tools; docs/MCP.md). Additive route;
+	// PROTOCOL.md untouched. The backend reuses bot.go's op-log client.
+	mux.Handle("/mcp", mcp.NewServer(newMCPBackend(hub, addr)))
 	mux.HandleFunc("/", serveClient)
 
 	srv := &http.Server{

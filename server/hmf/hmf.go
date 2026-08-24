@@ -15,6 +15,7 @@ package hmf
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -83,6 +84,21 @@ func TileName(id int) string {
 
 // TileNames returns the id -> name reverse palette (shared, read-only).
 func TileNames() map[int]string { return nameByID }
+
+// PaletteNames returns the frozen palette as a deterministic, comma-joined
+// list in ascending numeric id order (e.g. for tool docs / error messages).
+func PaletteNames() string {
+	ids := make([]int, 0, len(nameByID))
+	for id := range nameByID {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	names := make([]string, 0, len(ids))
+	for _, id := range ids {
+		names = append(names, nameByID[id])
+	}
+	return strings.Join(names, "|")
+}
 
 // Passable reports whether a tile name allows walking.
 func Passable(name string) bool { return PassableSet[name] }
