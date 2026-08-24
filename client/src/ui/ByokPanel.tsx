@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 
 /** BYOK panel — paste your own OpenRouter key; the app shows what it brought.
  *  Ox-decided: key lives in localStorage, server stores only a fingerprint. */
@@ -26,6 +26,8 @@ export interface ByokContribution {
   since?: number;
 }
 
+const BYOK_STORAGE_KEY = 'hearth.byok.v1';
+
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, {
     credentials: 'include',
@@ -41,6 +43,16 @@ export function ByokPanel({ open, onClose }: { open: boolean; onClose(): void })
   const [contrib, setContrib] = useState<ByokContribution | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+
+  // Keyboard-accessible close: Escape dismisses the sheet (CodeRabbit).
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, onClose]);
 
   const refresh = async () => {
     const [s, c] = await Promise.all([
@@ -62,7 +74,10 @@ export function ByokPanel({ open, onClose }: { open: boolean; onClose(): void })
         body: JSON.stringify({ key, model: 'stealth/ox-alpha' }),
       });
       if (!s.ok) { setErr(s.error ?? 'validation failed'); setBusy(false); return; }
-      setKey(''); // never keep the key in the input after vaulting
+      // Vault the key in the browser (Ox design: key lives client-side, the
+      // server keeps only the fingerprint). Wiped from the input either way.
+      try { localStorage.setItem(BYOK_STORAGE_KEY, key); } catch { /* storage full/blocked: session-only */ }
+      setKey('');
       setStatus(s);
       const c = await j<{ ok: boolean; contribution?: ByokContribution }>('/api/byok/contribution');
       setContrib(c.contribution ?? null);
@@ -75,7 +90,7 @@ export function ByokPanel({ open, onClose }: { open: boolean; onClose(): void })
   const remove = async () => {
     setBusy(true);
     try {
-      localStorage.removeItem('hearth.byok.v1');
+      localStorage.removeItem(BYOK_STORAGE_KEY);
       await j('/api/byok', { method: 'DELETE' });
       setStatus(null); setContrib(null);
     } catch (e) { setErr(String(e)); }
@@ -91,8 +106,14 @@ export function ByokPanel({ open, onClose }: { open: boolean; onClose(): void })
     <div class="sheet-overlay" onClick={onClose}>
       <div class="sheet" onClick={(e) => e.stopPropagation()}>
         <div class="sheet-grabber" />
-        <h3 style="margin:0 0 4px;font-size:15px">🔑 Hearth AI — bring your own key</h3>
-        <p style="margin:0 0 12px;color:#aaa;font-size:12px;line-height:1.5">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+          <h3 style="margin:0;font-size:15px">🔑 Hearth AI — bring your own key</h3>
+          <button
+            onClick={onClose} aria-label="Close"
+            style="border:none;background:none;color:#aaa;font-size:18px;cursor:pointer;padding:4px 8px;border-radius:6px"
+          >✕</button>
+        </div>
+        <p style="margin:6px 0 12px;color:#aaa;font-size:12px;line-height:1.5">
           Paste your OpenRouter key to power in-world AI (Mason, souls, Dream Rooms).
           The key lives in <em>your browser</em> — the server stores only a fingerprint, never the key.
         </p>
@@ -129,7 +150,7 @@ export function ByokPanel({ open, onClose }: { open: boolean; onClose(): void })
 
             {contrib && contrib.calls > 0 && (
               <div style="margin-top:12px;padding:10px;border-radius:8px;background:#1a1a1a;border:1px solid #333">
-                <h4 style="margin:0 0 8px;font-size:13px;color:#eee">✨ What your key brought (30 days)</h4>
+                <h4 style="margin:0 0 8px;font-size:13px;color:#eee">✨ Your AI usage (30 days)</h4>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:12px">
                   <div style="color:#aaa">AI calls</div><div style="text-align:right;color:#eee;font-weight:bold">{contrib.calls}</div>
                   <div style="color:#aaa">Tokens (in+out)</div><div style="text-align:right;color:#eee;font-weight:bold">{contrib.tokensTotal.toLocaleString()}</div>

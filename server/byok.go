@@ -24,6 +24,7 @@ package main
 // Every mutation emits an append-only activity_events row (kind=byok).
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -34,6 +35,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -166,6 +168,9 @@ func (s *Store) contributionByKey(userID string) (*byokContribution, error) {
 			c.LastUsed = last
 		}
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	c.TokensTotal = c.TokensIn + c.TokensOut
 	c.Since = window
 	return c, nil
@@ -176,11 +181,60 @@ func (s *Store) contributionByKey(userID string) (*byokContribution, error) {
 // byokORBase is the OpenRouter base; tests point it at an httptest server.
 var byokORBase = "https://openrouter.ai"
 
+// byokORClient and byokCompletionClient are shared, so every call does not
+// pay for a fresh connection pool (CodeRabbit: reuse one http.Client).
+var byokORClient = &http.Client{Timeout: 15 * time.Second}
+var byokCompletionClient = &http.Client{Timeout: 120 * time.Second}
+
 // byokModelAllowlist is the hardcoded free-tier allowlist (Ox guardrail:
 // "free tier only; hardcoded allowlist" — no arbitrary model billing).
 var byokModelAllowlist = map[string]bool{
 	"stealth/ox-alpha": true,
 }
+
+// byokFeatureAllowlist bounds the audit `feature` label to the known set so
+// the ai_usage table can't be polluted with arbitrary strings.
+var byokFeatureAllowlist = map[string]bool{
+	"mason": true, "soul": true, "dream": true, "byok.use": true,
+}
+
+// byokLimiter is a tiny per-user token bucket for the OpenRouter-backed
+// endpoints (each POST /api/byok and /api/byok/use triggers one outbound
+// call, so they get a cheap in-memory rate limit — fail-closed).
+type byokLimiter struct {
+	mu    sync.Mutex
+	limit int
+	win   time.Duration
+	hits  map[string][]int64
+}
+
+func newByokLimiter(limit int, win time.Duration) *byokLimiter {
+	return &byokLimiter{limit: limit, win: win, hits: map[string][]int64{}}
+}
+
+func (l *byokLimiter) allow(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now().Unix()
+	cut := now - int64(l.win.Seconds())
+	keep := l.hits[key][:0]
+	for _, t := range l.hits[key] {
+		if t >= cut {
+			keep = append(keep, t)
+		}
+	}
+	l.hits[key] = keep
+	if len(keep) >= l.limit {
+		return false
+	}
+	l.hits[key] = append(l.hits[key], now)
+	return true
+}
+
+var (
+	byokValidateLimiter = newByokLimiter(5, time.Minute)  // 5 key validations/min/user
+	byokUseLimiter      = newByokLimiter(10, time.Minute) // 10 completions/min/user
+)
 
 var errInvalidKey = errors.New("invalid OpenRouter key")
 
@@ -201,14 +255,13 @@ type orCompletion struct {
 
 // validateOpenRouterKey calls GET /api/v1/key with the caller's key. The key
 // is used only in this outbound Authorization header and never stored/logged.
-func validateOpenRouterKey(key string) (*orKeyInfo, error) {
-	req, err := http.NewRequest(http.MethodGet, byokORBase+"/api/v1/key", nil)
+func validateOpenRouterKey(ctx context.Context, key string) (*orKeyInfo, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, byokORBase+"/api/v1/key", nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+key)
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := byokORClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +303,7 @@ func validateOpenRouterKey(key string) (*orKeyInfo, error) {
 
 // completeWithKey runs one chat completion with the caller's key, in-memory.
 // The key is attached to the outbound request and discarded on return.
-func completeWithKey(key, model, prompt string) (*orCompletion, error) {
+func completeWithKey(ctx context.Context, key, model, prompt string) (*orCompletion, error) {
 	payload, err := json.Marshal(map[string]any{
 		"model":      model,
 		"messages":   []map[string]string{{"role": "user", "content": prompt}},
@@ -260,14 +313,13 @@ func completeWithKey(key, model, prompt string) (*orCompletion, error) {
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(http.MethodPost, byokORBase+"/api/v1/chat/completions", strings.NewReader(string(payload)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, byokORBase+"/api/v1/chat/completions", strings.NewReader(string(payload)))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+key)
-	client := &http.Client{Timeout: 120 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := byokCompletionClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -328,20 +380,32 @@ func maskFP(fp string) string {
 
 // handleByok dispatches /api/byok: POST upsert+validate, GET status,
 // GET /api/byok/contribution (per-key impact), DELETE revoke. Auth = hearth_session cookie.
+// Each path only accepts its own method(s); anything else is 405.
 func (h *Hub) handleByok(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case http.MethodPost:
-		h.byokUpsert(w, r)
-	case http.MethodGet:
-		if r.URL.Path == "/api/byok/contribution" {
-			h.byokContribution(w, r)
+	switch r.URL.Path {
+	case "/api/byok/contribution":
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.byokContribution(w, r)
+	case "/api/byok/status":
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		h.byokStatus(w, r)
-	case http.MethodDelete:
-		h.byokDelete(w, r)
-	default:
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	default: // /api/byok
+		switch r.Method {
+		case http.MethodPost:
+			h.byokUpsert(w, r)
+		case http.MethodGet:
+			h.byokStatus(w, r)
+		case http.MethodDelete:
+			h.byokDelete(w, r)
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
 	}
 }
 
@@ -392,9 +456,13 @@ func (h *Hub) byokUpsert(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "model not allowed"})
 		return
 	}
+	if !byokValidateLimiter.allow(sess.UserID) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"ok": false, "error": "too many validation attempts, slow down"})
+		return
+	}
 	// Validate against OpenRouter. The key lives only in this request's
 	// outbound Authorization header; it is discarded before we write anything.
-	info, err := validateOpenRouterKey(key)
+	info, err := validateOpenRouterKey(r.Context(), key)
 	if err != nil {
 		if errors.Is(err, errInvalidKey) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid OpenRouter key"})
@@ -402,6 +470,12 @@ func (h *Hub) byokUpsert(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Printf("byok validate (network): %v", err)
 		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "error": "could not reach OpenRouter"})
+		return
+	}
+	// Ox guardrail: this instance is free-tier only. A paid key is rejected
+	// rather than silently billed against the user's allowance.
+	if !info.IsFreeTier {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "free-tier only: connect a free OpenRouter key"})
 		return
 	}
 	fp := keyFingerprint(key)
@@ -522,7 +596,15 @@ func (h *Hub) byokUse(w http.ResponseWriter, r *http.Request) {
 	if feature == "" {
 		feature = "byok.use"
 	}
-	comp, err := completeWithKey(key, model, prompt)
+	if len(feature) > 32 || !byokFeatureAllowlist[feature] {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "feature not allowed"})
+		return
+	}
+	if !byokUseLimiter.allow(sess.UserID) {
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{"ok": false, "error": "too many AI calls, slow down"})
+		return
+	}
+	comp, err := completeWithKey(r.Context(), key, model, prompt)
 	if err != nil {
 		if errors.Is(err, errInvalidKey) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "invalid OpenRouter key"})
