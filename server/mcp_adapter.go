@@ -174,18 +174,19 @@ func (b *mcpBackend) Chat(deviceKey, name, worldID, channel, text string) (mcp.C
 		}
 		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		var env struct {
-			T string         `json:"t"`
-			D map[string]any `json:"d"`
+			T string          `json:"t"`
+			D json.RawMessage `json:"d"`
 		}
 		if err := conn.ReadJSON(&env); err != nil {
 			return mcp.ChatResult{}, fmt.Errorf("chat read: %w", err)
 		}
 		switch env.T {
 		case "welcome":
-			selfID, _ = env.D["selfId"].(string)
+			selfID, _ = envD(env.D)["selfId"].(string)
 		case "error":
-			code, _ := env.D["code"].(string)
-			msg, _ := env.D["message"].(string)
+			m := envD(env.D)
+			code, _ := m["code"].(string)
+			msg, _ := m["message"].(string)
 			return mcp.ChatResult{}, fmt.Errorf("chat join rejected: %s: %s", code, msg)
 		}
 	}
@@ -202,8 +203,8 @@ func (b *mcpBackend) Chat(deviceKey, name, worldID, channel, text string) (mcp.C
 		}
 		conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 		var env struct {
-			T string         `json:"t"`
-			D map[string]any `json:"d"`
+			T string          `json:"t"`
+			D json.RawMessage `json:"d"`
 		}
 		if err := conn.ReadJSON(&env); err != nil {
 			return mcp.ChatResult{}, fmt.Errorf("chat read: %w", err)
@@ -211,10 +212,11 @@ func (b *mcpBackend) Chat(deviceKey, name, worldID, channel, text string) (mcp.C
 		if env.T != "chat" {
 			continue // state/bot_msg/others — ignore
 		}
-		if from, _ := env.D["fromId"].(string); from != selfID {
+		m := envD(env.D)
+		if from, _ := m["fromId"].(string); from != selfID {
 			continue // another speaker's echo
 		}
-		ts, _ = env.D["ts"].(string)
+		ts, _ = m["ts"].(string)
 	}
 	return mcp.ChatResult{
 		Delivered: true, FromID: selfID, Name: name,
@@ -266,4 +268,16 @@ func (b *mcpBackend) Activity(worldID string, limit int) ([]map[string]any, erro
 		})
 	}
 	return out, nil
+}
+
+// envD decodes a WS envelope's d payload as a map, tolerating non-object
+// payloads. The frozen "state" envelope now carries d as an entity ARRAY
+// (mobile-joystick merge), so chat reads must not fail on it; any payload
+// that is not a JSON object simply yields an empty map.
+func envD(d json.RawMessage) map[string]any {
+	var m map[string]any
+	if err := json.Unmarshal(d, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
 }
