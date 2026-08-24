@@ -66,6 +66,14 @@ func (h *Hub) applyEditOp(sp *SpaceState, c *Client, op *hmf.Op) *EditAck {
 			return ack
 		}
 		return ack
+	case "asset":
+		// T2 custom asset upload: place/remove a user image (additive op
+		// kind — persisted, logged, broadcast like every other edit).
+		if err := h.applyAssetOp(w, op); err != nil {
+			ack.Err = err.Error()
+			return ack
+		}
+		return ack
 	case "paint", "erase", "place":
 		// grid ops below
 	default:
@@ -111,6 +119,14 @@ func (h *Hub) applyEditOp(sp *SpaceState, c *Client, op *hmf.Op) *EditAck {
 func (h *Hub) applyGridOp(w *World, op *hmf.Op) ([]hmf.CellChange, hmf.Grid, error) {
 	if op.Op != "erase" && op.TileID != hmf.FloorTile && hmf.TileName(op.TileID) == "" {
 		return nil, nil, errors.New("edit_rejected: unknown tileId " + itoa(op.TileID))
+	}
+	// T2 freeform-undo batches carry per-cell tile ids — validate each the
+	// same way the op-level id is validated above (unknown ids must be
+	// rejected, never silently mapped to floor).
+	for _, c := range op.Cells {
+		if c.HasTile && c.TileID != hmf.FloorTile && hmf.TileName(c.TileID) == "" {
+			return nil, nil, errors.New("edit_rejected: unknown cell tileId " + itoa(c.TileID))
+		}
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -288,8 +304,8 @@ func (h *Hub) handleChunkGet(sp *SpaceState, c *Client, op *hmf.Op) {
 	c.emit("chunk", map[string]any{
 		"spaceId": w.ID,
 		"cx":      op.CX, "cy": op.CY,
-		"rev":  rev,
-		"rle":  rle,
+		"rev":   rev,
+		"rle":   rle,
 		"tiles": tiles,
 	})
 	log.Printf("chunk_get: %s %d,%d rev=%d (%d tiles)", w.ID, op.CX, op.CY, rev, len(tiles))

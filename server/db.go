@@ -254,6 +254,27 @@ func (s *Store) migrate() error {
 		claim_value TEXT NOT NULL,
 		PRIMARY KEY (user_id, claim_type, claim_value)
 	)`,
+	// T2 editor v2 — custom asset upload: image bytes in the world's
+	// registry + the placements table (which cells show which asset).
+	`CREATE TABLE IF NOT EXISTS world_assets (
+		id TEXT PRIMARY KEY,
+		space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+		name TEXT NOT NULL DEFAULT '',
+		mime TEXT NOT NULL DEFAULT '',
+		w INTEGER NOT NULL DEFAULT 0,
+		h INTEGER NOT NULL DEFAULT 0,
+		owner_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		data BLOB NOT NULL
+	)`,
+	`CREATE INDEX IF NOT EXISTS idx_world_assets_space ON world_assets(space_id)`,
+	`CREATE TABLE IF NOT EXISTS world_asset_placements (
+		space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+		asset_id TEXT NOT NULL REFERENCES world_assets(id) ON DELETE CASCADE,
+		x INTEGER NOT NULL,
+		y INTEGER NOT NULL,
+		PRIMARY KEY (space_id, asset_id, x, y)
+	)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -426,6 +447,9 @@ func (s *Store) SaveWorld(w *World) error {
 	if err := s.saveObjects(w.ID, w.Objects); err != nil {
 		return err
 	}
+	if err := s.saveAssetPlacements(w.ID, w.Assets); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -592,11 +616,26 @@ func (s *Store) LoadWorld(id string) (*World, error) {
 		if err := s.loadPortals(id, &w); err != nil {
 			return nil, err
 		}
+		if err := s.loadAssetPlacementsInto(id, &w); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.loadObjects(id, &w); err != nil {
 		return nil, err
 	}
 	return &w, nil
+}
+
+// loadAssetPlacementsInto loads a world's placed assets (denormalized) into
+// w.Assets. Separate wrapper so db.go doesn't import the placement loader's
+// return shape twice.
+func (s *Store) loadAssetPlacementsInto(spaceID string, w *World) error {
+	assets, err := s.loadAssetPlacements(spaceID)
+	if err != nil {
+		return err
+	}
+	w.Assets = assets
+	return nil
 }
 
 type chunkRow struct {

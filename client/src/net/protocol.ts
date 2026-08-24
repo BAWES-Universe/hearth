@@ -80,6 +80,10 @@ export interface EditMsg {
   portal?: PortalPayload;
   objectId?: string;
   object?: ObjectPayload;
+  /** Batch cells (freeform stroke acks carry per-cell tileId + priorTileId). */
+  cells?: { x: number; y: number; tileId?: number; priorTileId?: number }[];
+  /** T2 custom asset placement/removal (op 'asset'). */
+  asset?: { assetId: string; x: number; y: number; remove?: boolean; name?: string; url?: string };
   by?: string;
   seq?: number;
   applied?: boolean;
@@ -105,12 +109,16 @@ export interface PortalPayload {
   targetY: number;
 }
 
-/** Outbound editor op (frozen HMF v1 ops: paint|erase|place|zone|portal|object|publish). */
+/** Outbound editor op (frozen HMF v1 ops: paint|erase|place|zone|portal|object|publish + T2 additive asset/cells). */
 export interface EditOut {
   op: string;
   x?: number;
   y?: number;
   tileId?: number;
+  /** Freeform stroke: batch of cells (T2). Per-cell tileId = freeform undo. */
+  cells?: { x: number; y: number; tileId?: number }[];
+  /** T2 custom asset placement: {op:'asset', asset:{assetId,x,y[,remove]}}. */
+  asset?: { assetId: string; x: number; y: number; remove?: boolean };
   portal?: PortalPayload;
   portalId?: string;
   object?: ObjectPayload;

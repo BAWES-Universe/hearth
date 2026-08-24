@@ -273,6 +273,11 @@ func getString(m map[string]any, k string) string {
 	return s
 }
 
+func getBool(m map[string]any, k string) bool {
+	b, _ := m[k].(bool)
+	return b
+}
+
 func getInt(m map[string]any, k string) (int, bool) {
 	f, ok := m[k].(float64)
 	if !ok {
@@ -561,7 +566,7 @@ func (c *Client) handleMedia(msg map[string]any) {
 	}
 	// Pass-through relay for now — the media/ package integrates later.
 	target.Client.emit("media", map[string]any{
-		"from": c.Entity.ID,
+		"from":   c.Entity.ID,
 		"action": getString(msg, "action"), "data": msg["data"],
 	})
 	log.Printf("media relay (pass-through, media/ integration pending): %s -> %s action=%s",
@@ -629,7 +634,7 @@ func (h *Hub) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "service": "hearth", "version": version,
 		"uptime_s": int(time.Since(startTime).Seconds()),
-		"spaces": nSpaces, "clients": nClients,
+		"spaces":   nSpaces, "clients": nClients,
 		"entities": totalEntities, "bots": totalBots,
 		"sessions": sessions, "t": time.Now().UTC().Format(time.RFC3339),
 	})

@@ -36,11 +36,17 @@ const FloorTile = 0
 // id. 0 = floor (implicit base, never stored). Adding or renumbering a tile
 // is a protocol change (docs/HMF-v1.md) — the server (world.go) and the
 // client editor (tiles.ts) mirror this exactly.
+//
+// T2 (editor v2) grew the palette ADDITIVELY: ids 20-21 are animated tiles
+// (frame sequences defined by AnimatedTiles below). Ids 0-19 are untouched,
+// so existing worlds and the frozen op stream are unaffected.
 var Palette = map[string]int{
 	"floor": 0, "wall": 1, "water": 2, "grass": 3, "stone": 4,
 	"sand": 5, "path": 6, "wood": 7, "lava": 8, "ice": 9,
 	"flower": 10, "bush": 11, "rock": 12, "tree": 13, "roof": 14,
 	"door": 15, "fence": 16, "bridge": 17, "crystal": 18, "dirt": 19,
+	// T2 animated tiles (additive — never renumber ids 0-19).
+	"torch": 20, "glow": 21,
 }
 
 // PassableSet marks which tiles allow walking. Collision flags in HMF v1 are
@@ -50,6 +56,52 @@ var PassableSet = map[string]bool{
 	"floor": true, "grass": true, "stone": true, "sand": true,
 	"path": true, "wood": true, "ice": true, "flower": true,
 	"dirt": true, "bridge": true,
+	"glow": true, // T2: floating light — walk-over decoration
+}
+
+// AnimDef describes one animated tile's frame sequence. The frame COUNT and
+// playback rate are server-authoritative and embedded in every world doc
+// (GeoJSON "anims") so clients derive playback from the server, never from a
+// hardcoded client table. The client generates the actual frame textures
+// from its own sprite pipeline (tiles.ts).
+type AnimDef struct {
+	TileID int     `json:"tileId"`
+	Name   string  `json:"name"`
+	Frames int     `json:"frames"`
+	FPS    float64 `json:"fps"`
+}
+
+// AnimatedTiles is the small set of animated tiles (T2 editor v2): water and
+// lava get the liquid shimmer, torch and glow are the new animated palette
+// entries. Frame counts/rates are stable protocol data — changing them is a
+// visual change, not a format change (HMF v1 chunks still store plain tile
+// ids; animation is a derived render property).
+var AnimatedTiles = map[int]AnimDef{
+	2:  {TileID: 2, Name: "water", Frames: 4, FPS: 4},
+	8:  {TileID: 8, Name: "lava", Frames: 4, FPS: 5},
+	20: {TileID: 20, Name: "torch", Frames: 4, FPS: 7},
+	21: {TileID: 21, Name: "glow", Frames: 6, FPS: 5},
+}
+
+// Anims returns the animated-tile table as a deterministic slice sorted by
+// tile id (for the world doc "anims" field).
+func Anims() []AnimDef {
+	ids := make([]int, 0, len(AnimatedTiles))
+	for id := range AnimatedTiles {
+		ids = append(ids, id)
+	}
+	sort.Ints(ids)
+	out := make([]AnimDef, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, AnimatedTiles[id])
+	}
+	return out
+}
+
+// IsAnimated reports whether a tile id has a server-defined frame sequence.
+func IsAnimated(id int) bool {
+	_, ok := AnimatedTiles[id]
+	return ok
 }
 
 var nameByID = func() map[int]string {
@@ -106,10 +158,20 @@ func Passable(name string) bool { return PassableSet[name] }
 // ErrTooManyCells is returned when a batch op exceeds MaxCellsPerOp.
 var ErrTooManyCells = errors.New("hmf: op exceeds max cells per op")
 
-// Cell is one tile coordinate.
+// Cell is one tile coordinate. TileID is optional and only meaningful for
+// batch ops: when the op carries no top-level TileID (T2 freeform-undo), each
+// cell may carry its own tile id so a single inverse op can restore a batch
+// of cells with different prior tiles (0 = floor).
+//
+// HasTile marks that the cell payload explicitly carried a "tileId" key —
+// it distinguishes "restore this cell to floor (tileId 0)" from "no per-cell
+// tile given, fall back to the op-level tile id" (the v1 batch form). It is
+// never serialized (JSON "-"); the wire form is {x, y, tileId}.
 type Cell struct {
-	X int `json:"x"`
-	Y int `json:"y"`
+	X       int  `json:"x"`
+	Y       int  `json:"y"`
+	TileID  int  `json:"tileId,omitempty"` // per-cell tile (T2 freeform-undo); absent = use op-level
+	HasTile bool `json:"-"`
 }
 
 // Portal is a portal op payload / persisted portal row.
@@ -166,6 +228,18 @@ type Object struct {
 	Data map[string]any `json:"data,omitempty"`
 }
 
+// AssetOp is the T2 custom-asset placement payload: place (or remove) a
+// user-uploaded image at a cell. AssetID references the world's asset
+// registry (REST upload); Remove turns the op into a compensating removal
+// (undo). Additive op kind — the frozen paint/erase/place/zone/portal/
+// publish stream is untouched.
+type AssetOp struct {
+	AssetID string `json:"assetId"`
+	X       int    `json:"x"`
+	Y       int    `json:"y"`
+	Remove  bool   `json:"remove,omitempty"`
+}
+
 // Op is one frozen HMF v1 editor operation. Every mutation of a world is an
 // Op; ops are server-arbitrated (LWW by arrival order) and persisted to the
 // op_log for replay / build history.
@@ -192,6 +266,9 @@ type Op struct {
 	// payload (kind door|npc|sign|light). The op kind stays 'place'.
 	Object   *Object `json:"object,omitempty"`
 	ObjectID string  `json:"objectId,omitempty"`
+
+	// Asset placement (T2 custom asset upload): add/remove a placed image.
+	Asset *AssetOp `json:"asset,omitempty"`
 
 	// Chunk fetch (chunk_get request): which chunk the client wants.
 	CX int `json:"cx,omitempty"`
@@ -288,22 +365,41 @@ func ApplyOp(g Grid, w, h int, op *Op) ([]CellChange, error) {
 	if tid < 0 || tid > 255 {
 		return nil, fmt.Errorf("hmf: tileId %d out of range", tid)
 	}
+	// T2 freeform-undo: when any cell carries its own tile id, that id wins
+	// for that cell; cells without one fall back to the op-level tile. This
+	// lets a single compensating inverse op restore a stroke over cells with
+	// different prior tiles (0 = floor). The v1 batch form (op-level TileID +
+	// plain {x,y} cells) is untouched.
+	usePerCell := false
+	for _, c := range cells {
+		if c.HasTile {
+			usePerCell = true
+			break
+		}
+	}
 	var out []CellChange
 	for _, c := range cells {
 		if c.X < 0 || c.Y < 0 || c.X >= w || c.Y >= h {
 			return nil, fmt.Errorf("hmf: cell (%d,%d) outside %dx%d world", c.X, c.Y, w, h)
 		}
+		ct := tid
+		if usePerCell && c.HasTile {
+			ct = c.TileID
+			if ct < 0 || ct > 255 {
+				return nil, fmt.Errorf("hmf: cell tileId %d out of range", ct)
+			}
+		}
 		k := Key(c.X, c.Y)
 		prior := g[k]
-		if prior == tid {
+		if prior == ct {
 			continue // no change — keep chunk revs stable
 		}
-		if tid == FloorTile {
+		if ct == FloorTile {
 			delete(g, k)
 		} else {
-			g[k] = tid
+			g[k] = ct
 		}
-		out = append(out, CellChange{X: c.X, Y: c.Y, TileID: tid, Prior: prior})
+		out = append(out, CellChange{X: c.X, Y: c.Y, TileID: ct, Prior: prior})
 	}
 	return out, nil
 }

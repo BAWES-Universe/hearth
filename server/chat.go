@@ -71,12 +71,12 @@ func (c *Client) handleChat(msg map[string]any) {
 		return
 	}
 
-		payload := map[string]any{
-			"channel": channel,
-			"from":    c.Entity.Name, "fromId": c.Entity.ID,
-			"text": text, "ts": time.Now().UTC().Format(time.RFC3339),
-			"nonce": getString(msg, "nonce"),
-		}
+	payload := map[string]any{
+		"channel": channel,
+		"from":    c.Entity.Name, "fromId": c.Entity.ID,
+		"text": text, "ts": time.Now().UTC().Format(time.RFC3339),
+		"nonce": getString(msg, "nonce"),
+	}
 
 	sp := c.hub.space(c.spaceID)
 	if sp == nil {
@@ -290,7 +290,14 @@ func parseEditOp(msg map[string]any) *hmf.Op {
 			if !okX || !okY {
 				return nil
 			}
-			op.Cells = append(op.Cells, hmf.Cell{X: cx, Y: cy})
+			c := hmf.Cell{X: cx, Y: cy}
+			// T2 freeform-undo: a cell may carry its own tile id (prior tile
+			// to restore). Presence of the key matters — 0 means "floor".
+			if tid, ok := getInt(cell, "tileId"); ok {
+				c.TileID = tid
+				c.HasTile = true
+			}
+			op.Cells = append(op.Cells, c)
 		}
 	}
 
@@ -355,6 +362,21 @@ func parseEditOp(msg map[string]any) *hmf.Op {
 		}
 		if op.Zone != nil && !intFieldsPresent(payload(msg, "zone"), "x", "y", "w", "h") {
 			return nil
+		}
+	case "asset":
+		// T2 custom asset upload: {op:'asset', asset:{assetId,x,y[,remove]}}
+		a, ok := msg["asset"].(map[string]any)
+		if !ok {
+			return nil
+		}
+		if getString(a, "assetId") == "" || !intFieldsPresent(a, "x", "y") {
+			return nil
+		}
+		op.Asset = &hmf.AssetOp{
+			AssetID: getString(a, "assetId"),
+			X:       mustInt(a, "x"),
+			Y:       mustInt(a, "y"),
+			Remove:  getBool(a, "remove"),
 		}
 	case "publish":
 		// no payload
@@ -490,6 +512,28 @@ func (c *Client) broadcastEditAck(sp *SpaceState, ack *EditAck) {
 			d["object"] = op.Object
 		} else {
 			d["objectId"] = op.ObjectID
+		}
+	case "asset":
+		// T2 custom asset upload: broadcast the placement so every client in
+		// the space renders (or removes) it immediately. name/url are
+		// denormalized from the world's placement list for instant render.
+		if op.Asset != nil {
+			ad := map[string]any{
+				"assetId": op.Asset.AssetID,
+				"x":       op.Asset.X,
+				"y":       op.Asset.Y,
+				"remove":  op.Asset.Remove,
+			}
+			if !op.Asset.Remove {
+				for _, pl := range sp.World.Assets {
+					if pl.AssetID == op.Asset.AssetID && pl.X == op.Asset.X && pl.Y == op.Asset.Y {
+						ad["name"] = pl.Name
+						ad["url"] = pl.URL
+						break
+					}
+				}
+			}
+			d["asset"] = ad
 		}
 	case "publish":
 		d["isPublished"] = true
