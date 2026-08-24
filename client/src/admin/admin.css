@@ -1,0 +1,298 @@
+/* S9 admin console — dark theme, matches the Hearth game palette. */
+
+:root {
+  --bg: #0d0a12;
+  --panel: #17111f;
+  --panel-2: #1f1830;
+  --line: #2c2340;
+  --text: #e8e2f5;
+  --muted: #8d84a8;
+  --accent: #b48cff;
+  --ok: #4ade80;
+  --danger: #f87171;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#admin-app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+.admin {
+  display: flex;
+  min-height: 100vh;
+}
+
+/* sidebar */
+.admin-side {
+  width: 220px;
+  flex: 0 0 220px;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  padding: 16px 10px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+}
+
+.admin-brand {
+  font-size: 18px;
+  font-weight: 700;
+  padding: 4px 10px 16px;
+  letter-spacing: 0.02em;
+}
+
+.admin-brand span {
+  color: var(--accent);
+}
+
+.admin-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.admin-nav-item {
+  text-align: left;
+  background: none;
+  border: 0;
+  color: var(--muted);
+  font: inherit;
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.admin-nav-item:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+
+.admin-nav-item.active {
+  color: var(--text);
+  background: var(--panel-2);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+
+.admin-side-foot {
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.admin-key {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* main */
+.admin-main {
+  flex: 1;
+  padding: 24px 28px;
+  min-width: 0;
+}
+
+.admin-main h1 {
+  font-size: 22px;
+  margin: 0 0 18px;
+}
+
+.admin-muted {
+  color: var(--muted);
+}
+
+.admin-error {
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  background: rgba(248, 113, 113, 0.08);
+  padding: 10px 14px;
+  border-radius: 8px;
+}
+
+/* cards */
+.admin-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.admin-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+}
+
+.admin-card-value {
+  font-size: 30px;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.admin-card-label {
+  color: var(--muted);
+  margin-top: 4px;
+}
+
+/* table */
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.admin-table th,
+.admin-table td {
+  text-align: left;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+.admin-table th {
+  color: var(--muted);
+  font-weight: 600;
+  background: var(--panel-2);
+  white-space: nowrap;
+}
+
+.admin-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.admin-mono {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.admin-diff {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--muted);
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-actions {
+  white-space: nowrap;
+}
+
+/* badges */
+.admin-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: var(--panel-2);
+  color: var(--muted);
+  border: 1px solid var(--line);
+  margin-right: 4px;
+}
+
+.admin-badge.ok {
+  color: var(--ok);
+  border-color: rgba(74, 222, 128, 0.4);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+.admin-badge.accent {
+  color: var(--accent);
+  border-color: rgba(180, 140, 255, 0.4);
+  background: rgba(180, 140, 255, 0.08);
+}
+
+/* controls */
+.admin-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.admin-input {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 12px;
+  font: inherit;
+  min-width: 240px;
+}
+
+.admin-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.admin-btn {
+  background: var(--accent);
+  color: #17111f;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 14px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.admin-btn:hover {
+  filter: brightness(1.1);
+}
+
+.admin-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.admin-btn-small {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.admin-btn-ghost {
+  background: none;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  font-weight: 500;
+}
+
+.admin-btn-ghost.active {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.admin-btn-danger {
+  background: var(--danger);
+  color: #17111f;
+}
