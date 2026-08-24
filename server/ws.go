@@ -754,7 +754,14 @@ func (h *Hub) handleSpaceGet(w http.ResponseWriter, r *http.Request) {
 	if sp := h.space(id); sp != nil {
 		entities = sp.EntitySnaps()
 	}
-	writeJSON(w, http.StatusOK, world.WorldJSON(entities))
+	j := world.WorldJSON(entities)
+	// ownership stream: surface the caller's edit permission alongside the
+	// world doc so portal hops and deep links can gate the editor UI without
+	// waiting for a fresh welcome envelope (mirrors ws.go welcome canEdit).
+	if sess := h.sessionFromRequest(r); sess != nil {
+		j["canEdit"] = h.canEditWorld(sess, world)
+	}
+	writeJSON(w, http.StatusOK, j)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

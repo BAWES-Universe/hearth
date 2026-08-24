@@ -56,6 +56,38 @@ func testEditClient(h *Hub, sess *Session) *Client {
 	return &Client{hub: h, Session: sess, Entity: &Entity{ID: "e-" + sess.ID[:6]}}
 }
 
+// TestSpaceGetCanEdit: GET /api/spaces/{id} surfaces the caller's edit
+// permission (owner=true, stranger=false) so portal hops and deep links can
+// gate the editor UI without waiting for a fresh welcome envelope.
+func TestSpaceGetCanEdit(t *testing.T) {
+	h := newTestHub(t)
+	owner := newTestUser(t, h, "sp-owner", "Owner")
+	stranger := newTestUser(t, h, "sp-stranger", "Stranger")
+
+	_, out := doJSON(t, h.createWorld, http.MethodPost, "/api/worlds",
+		map[string]any{"name": "Spaces ACL"}, owner)
+	id, _ := out["id"].(string)
+	if id == "" {
+		t.Fatal("no world id")
+	}
+
+	code, own := doJSON(t, h.handleSpaceGet, http.MethodGet, "/api/spaces/"+id, nil, owner)
+	if code != http.StatusOK {
+		t.Fatalf("owner space get = %d, want 200", code)
+	}
+	if ce, _ := own["canEdit"].(bool); !ce {
+		t.Errorf("owner canEdit = %v, want true", own["canEdit"])
+	}
+
+	code, str := doJSON(t, h.handleSpaceGet, http.MethodGet, "/api/spaces/"+id, nil, stranger)
+	if code != http.StatusOK {
+		t.Fatalf("stranger space get = %d, want 200", code)
+	}
+	if ce, _ := str["canEdit"].(bool); ce {
+		t.Errorf("stranger canEdit = %v, want false", str["canEdit"])
+	}
+}
+
 func TestWorldEditACL(t *testing.T) {
 	h := newTestHub(t)
 	owner := newTestUser(t, h, "acl-owner", "Owner")
