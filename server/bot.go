@@ -256,8 +256,8 @@ func (b *BotClient) Run() *BotResult {
 			break
 		}
 		var env struct {
-			T string         `json:"t"`
-			D map[string]any `json:"d"`
+			T string          `json:"t"`
+			D json.RawMessage `json:"d"`
 		}
 		if err := conn.ReadJSON(&env); err != nil {
 			if res.FirstErr == "" {
@@ -268,18 +268,27 @@ func (b *BotClient) Run() *BotResult {
 		if env.T != "edit" && env.T != "welcome" && env.T != "error" {
 			continue // state/chat/pong/etc — ignore
 		}
+		// d may be ANY JSON (frozen contract: state's d is an entity ARRAY).
+		// Only the handled types below are object payloads; anything that
+		// fails to decode as an object is skipped, never fatal.
+		var d map[string]any
+		if len(env.D) > 0 {
+			if err := json.Unmarshal(env.D, &d); err != nil {
+				continue
+			}
+		}
 		switch env.T {
 		case "welcome":
-			b.selfID, _ = env.D["selfId"].(string)
+			b.selfID, _ = d["selfId"].(string)
 			res.BotID = b.selfID
 		case "edit":
-			by, _ := env.D["by"].(string)
+			by, _ := d["by"].(string)
 			if by != b.selfID {
 				continue // another actor's edit — not ours
 			}
-			applied, _ := env.D["applied"].(bool)
-			deduped, _ := env.D["deduped"].(bool)
-			if seq := int64FromAny(env.D["seq"]); seq > 0 {
+			applied, _ := d["applied"].(bool)
+			deduped, _ := d["deduped"].(bool)
+			if seq := int64FromAny(d["seq"]); seq > 0 {
 				res.Seqs = append(res.Seqs, seq)
 			}
 			if applied && !deduped {
@@ -290,8 +299,8 @@ func (b *BotClient) Run() *BotResult {
 			}
 			acked++
 		case "error":
-			code, _ := env.D["code"].(string)
-			msg, _ := env.D["message"].(string)
+			code, _ := d["code"].(string)
+			msg, _ := d["message"].(string)
 			if res.FirstErr == "" {
 				res.FirstErr = code + ": " + msg
 			}

@@ -18,7 +18,7 @@ func serverHandlesType(typ string) bool {
 // validChannel mirrors the channel check in handleChat (chat.go:46-52).
 func validChannel(c string) bool {
 	switch c {
-	case "proximity", "space", "dm":
+	case "proximity", "space", "dm", "global":
 		return true
 	default:
 		return false

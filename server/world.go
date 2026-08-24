@@ -151,6 +151,53 @@ func (w *World) TileAt(x, y int) string {
 	return "floor"
 }
 
+// Passable reports whether the tile at (x,y) allows walking. Floor (implicit
+// empty tiles) is always passable; impassable palette entries (wall, water,
+// ...) block. Out-of-bounds is blocked.
+func (w *World) Passable(x, y int) bool {
+	if x < 0 || y < 0 || x >= w.Width || y >= w.Height {
+		return false
+	}
+	return IsPassableTileName(w.TileAt(x, y))
+}
+
+// NearestPassable BFS-spirals outward from (x,y) to the closest passable
+// tile (Manhattan rings, ties broken deterministically). Rescues spawns that
+// land on impassable tiles — polluted maps with walls painted on/near the
+// spawn point (town-square live-test bug) would otherwise freeze movement
+// (A* refuses a blocked start). Returns ok=false only when the whole world
+// is impassable.
+func (w *World) NearestPassable(x, y int) (int, int, bool) {
+	if w.Passable(x, y) {
+		return x, y, true
+	}
+	limit := w.Width
+	if w.Height > limit {
+		limit = w.Height
+	}
+	for r := 1; r <= limit; r++ {
+		for dy := -r; dy <= r; dy++ {
+			for dx := -r; dx <= r; dx++ {
+				if abs(dx) != r && abs(dy) != r {
+					continue // walk the ring only, not the filled square
+				}
+				nx, ny := x+dx, y+dy
+				if w.Passable(nx, ny) {
+					return nx, ny, true
+				}
+			}
+		}
+	}
+	return x, y, false
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
+
 // TileList returns tiles sorted by y then x (deterministic output) with the
 // numeric tileId derived from the frozen palette.
 func (w *World) TileList() []Tile {
