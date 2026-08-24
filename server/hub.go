@@ -297,6 +297,7 @@ type Hub struct {
 	unregister chan *Client
 	closed     chan struct{}
 	once       sync.Once
+	bots       *BotManager // S7 headless builder bot registry (bot.go)
 }
 
 func NewHub(store *Store) *Hub {
@@ -307,6 +308,7 @@ func NewHub(store *Store) *Hub {
 		register:   make(chan *Client, 64),
 		unregister: make(chan *Client, 64),
 		closed:     make(chan struct{}),
+		bots:       NewBotManager(),
 	}
 	for _, w := range store.ListWorlds() {
 		h.spaces[w.ID] = NewSpaceState(w)

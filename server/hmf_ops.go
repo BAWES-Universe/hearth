@@ -12,10 +12,11 @@ import (
 // the op as recorded (with server seq), the changed cells (with prior tile
 // ids for compensating inverse ops / undo), and the touched chunk revisions.
 type EditAck struct {
-	Op     *hmf.Op
-	Cells  []hmf.CellChange
-	Chunks []ChunkInfo
-	Err    string
+	Op      *hmf.Op
+	Cells   []hmf.CellChange
+	Chunks  []ChunkInfo
+	Err     string
+	Deduped bool // replay-safe skip: an op with the same idem key was already applied
 }
 
 // applyEditOp applies one frozen editor op to a space's world (server-
@@ -27,6 +28,12 @@ func (h *Hub) applyEditOp(sp *SpaceState, c *Client, op *hmf.Op) *EditAck {
 	w := sp.World
 	op.SpaceID = w.ID
 	op.By = c.Entity.ID
+	if c.Session != nil {
+		// Actor = the account the op is attributed to in the audit trail
+		// (user id = sha256(deviceKey)); bots are attributed to their bot
+		// account (docs/BOT-PROTOCOL.md).
+		op.Actor = c.Session.UserID
+	}
 	ack := &EditAck{Op: op}
 
 	switch op.Op {

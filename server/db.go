@@ -151,6 +151,7 @@ func (s *Store) migrate() error {
 			op TEXT NOT NULL,
 			payload TEXT NOT NULL,
 			ts TEXT NOT NULL,
+			idem TEXT NOT NULL DEFAULT '',
 			PRIMARY KEY (space_id, seq)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_op_log_space ON op_log(space_id)`,
@@ -180,6 +181,13 @@ func (s *Store) migrate() error {
 		if err := s.ensureColumn("spaces", col.name, col.ddl); err != nil {
 			return fmt.Errorf("migrate %s: %w", col.name, err)
 		}
+	}
+	// op_log idempotency column (existing DBs pre-date the idem column).
+	if err := s.ensureColumn("op_log", "idem", `ALTER TABLE op_log ADD COLUMN idem TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("migrate op_log idem: %w", err)
+	}
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_op_log_idem ON op_log(space_id, idem) WHERE idem <> ''`); err != nil {
+		return fmt.Errorf("migrate op_log idem index: %w", err)
 	}
 	return nil
 }
@@ -587,14 +595,32 @@ func (s *Store) NextOpSeq(spaceID string) (int64, error) {
 }
 
 // AppendOp records one applied editor op in the append-only op_log.
+// The op's idempotency key (op.Idem) is stored in its own column so replays
+// can be deduped cheaply (unique partial index, docs/BOT-PROTOCOL.md).
 func (s *Store) AppendOp(spaceID string, seq int64, op *hmf.Op) error {
 	payload, err := json.Marshal(op)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT INTO op_log (space_id, seq, op, payload, ts) VALUES (?,?,?,?,?)`,
-		spaceID, seq, op.Op, string(payload), time.Now().UTC().Format(time.RFC3339))
+	_, err = s.db.Exec(`INSERT INTO op_log (space_id, seq, op, payload, ts, idem) VALUES (?,?,?,?,?,?)`,
+		spaceID, seq, op.Op, string(payload), time.Now().UTC().Format(time.RFC3339), op.Idem)
 	return err
+}
+
+// OpIdemSeq resolves a previously applied op's seq by idempotency key.
+// Returns (seq, true) when an op with the same (space, idem) already exists —
+// the replay is safe to skip and ack as deduped. (_, false) when new.
+func (s *Store) OpIdemSeq(spaceID, idem string) (int64, bool) {
+	if idem == "" {
+		return 0, false
+	}
+	var seq int64
+	err := s.db.QueryRow(`SELECT seq FROM op_log WHERE space_id = ? AND idem = ? ORDER BY seq LIMIT 1`,
+		spaceID, idem).Scan(&seq)
+	if err != nil {
+		return 0, false
+	}
+	return seq, true
 }
 
 // LoadOpLog returns the op stream of a space, oldest first (build history /

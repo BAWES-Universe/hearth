@@ -144,12 +144,24 @@ type Op struct {
 	// UndoOf references the server seq of the op this op compensates.
 	UndoOf int64 `json:"undoOf,omitempty"`
 
+	// Idem is the optional idempotency key (agent-facing op-log contract,
+	// docs/BOT-PROTOCOL.md): "<bot_run_id>:<op_index>". When set, the server
+	// dedupes replays — an op already applied under the same key (space_id,
+	// idem) is acknowledged with deduped:true instead of being re-applied.
+	// Humans/legacy clients never send it ("" = no dedupe).
+	Idem string `json:"idem,omitempty"`
+
 	// Seq is the server-assigned monotonic op seq (per space). Filled by the
 	// server on apply; the op_log key is (space_id, seq).
 	Seq int64 `json:"seq,omitempty"`
 
-	// By is the acting session id, filled by the server on apply.
+	// By is the acting session/entity id, filled by the server on apply.
 	By string `json:"by,omitempty"`
+
+	// Actor is the acting user id (sha256(deviceKey)) — the account the op is
+	// attributed to in the audit trail (op_log payload + activity_events).
+	// Filled by the server on apply; bots are attributed to their bot account.
+	Actor string `json:"actor,omitempty"`
 
 	// SpaceID is the target space, filled/validated by the server.
 	SpaceID string `json:"spaceId,omitempty"`
