@@ -249,6 +249,12 @@ func (c *Client) handleMessage(raw []byte) {
 		c.handleSignal(msg)
 	case "media":
 		c.handleMedia(msg)
+	case "media_join":
+		c.handleMediaJoin(msg)
+	case "media_leave":
+		c.handleMediaLeave(msg)
+	case "media_signal":
+		c.handleMediaSignal(msg)
 	case "bot_msg":
 		c.handleBotMsg(msg)
 	case "ping":

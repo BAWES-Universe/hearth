@@ -8,7 +8,7 @@ package main
 // in the same commit.
 func serverHandlesType(typ string) bool {
 	switch typ {
-	case "join", "move", "chat", "edit", "portal", "signal", "media", "bot_msg", "ping":
+	case "join", "move", "chat", "edit", "portal", "signal", "media", "media_join", "media_leave", "media_signal", "bot_msg", "ping":
 		return true
 	default:
 		return false

@@ -15,6 +15,8 @@ import { Hud } from './ui/Hud';
 import { JoinScreen } from './ui/JoinScreen';
 import { EditToolbar, type EditMode } from './ui/EditToolbar';
 import { WorldsDirectory } from './ui/WorldsDirectory';
+import { VoiceBubble } from './ui/VoiceBubble';
+import { VoiceManager, type VoicePeer, type VoiceState } from './net/voice';
 import { loadSpec, type AvatarSpec } from './avatar/spec';
 
 type Phase = 'join' | 'loading' | 'world';
@@ -74,6 +76,7 @@ export function App() {
   const mountRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<WorldRenderer | null>(null);
   const netRef = useRef<Net | null>(null);
+  const voiceRef = useRef<VoiceManager | null>(null);
   const selfIdRef = useRef('');
   const selfNameRef = useRef('');
   const specRef = useRef<AvatarSpec>(loadSpec());
@@ -104,6 +107,12 @@ export function App() {
   const [worldsLoading, setWorldsLoading] = useState(false);
   const [creatingWorld, setCreatingWorld] = useState(false);
   const [publishing, setPublishing] = useState(false);
+
+  // T2 voice bubble (media plane — docs/MEDIA.md)
+  const [voiceState, setVoiceState] = useState<VoiceState>('off');
+  const [voicePeers, setVoicePeers] = useState<VoicePeer[]>([]);
+  const [micOn, setMicOn] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
 
   // refs mirroring state for stable closures (rAF loops, ws handlers)
   const modeRef = useRef<EditMode>('play');
@@ -272,6 +281,8 @@ export function App() {
         r?.setSelf(selfIdRef.current, selfNameRef.current || 'you', { spec: specRef.current });
         if (typeof d.x === 'number' && typeof d.y === 'number') r?.setLocalPos(d.x, d.y);
         setSpaceName(target);
+        // move the voice bubble to the new space (server re-joins the room)
+        voiceRef.current?.enter(target);
         // keep the URL as the world's deep link (no reload)
         const q = new URLSearchParams(window.location.search);
         if (q.get('space') !== target) {
@@ -314,6 +325,7 @@ export function App() {
           if (sp) {
             lastSpaceRef.current = sp;
             setSpaceName(sp);
+            voiceRef.current?.enter(sp);
           }
           setPhase('world');
           setMode('play');
@@ -364,8 +376,17 @@ export function App() {
           ]);
           if (!sheetOpenRef.current) setUnread((u) => u + 1);
         },
+        onMediaSignal: (d) => voiceRef.current?.handleSignal(d),
+        onMediaState: (d) => voiceRef.current?.handleState(d),
       });
       netRef.current = net;
+      voiceRef.current?.leave(); // drop any stale bubble from a previous net
+      voiceRef.current = new VoiceManager(net, {
+        onState: (s) => setVoiceState(s),
+        onPeers: (p) => setVoicePeers(p),
+        onMic: (m) => setMicOn(m),
+        onSpeaking: (sp) => setSpeaking(sp),
+      });
       net.connect({ name, lang: 'en', space, guest: true, deviceKey: deviceKey(), avatar: { spec } });
 
       // early world fetch → tiles + portals render before welcome arrives
@@ -578,6 +599,7 @@ export function App() {
       selfId: () => selfIdRef.current,
       status: () => status,
       space: () => lastSpaceRef.current,
+      voice: () => voiceRef.current?.getState(),
     };
   }, [status]);
 
@@ -588,6 +610,15 @@ export function App() {
       <div ref={mountRef} class="world-mount" />
       {inWorld && (
         <Hud status={status} unread={unread} space={spaceName} onOpenChat={openChat} onOpenWorlds={openWorlds} />
+      )}
+      {inWorld && (
+        <VoiceBubble
+          state={voiceState}
+          peers={voicePeers}
+          micOn={micOn}
+          speaking={speaking}
+          onToggleMic={() => void voiceRef.current?.toggleMic()}
+        />
       )}
       {inWorld && (
         <EditToolbar

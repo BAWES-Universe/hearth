@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { env, type ChatMsg, type Envelope } from './protocol';
+import { env, type ChatMsg, type Envelope, type MediaSignalMsg } from './protocol';
 
 // Wire protocol v0 is FROZEN (PROTOCOL.md). These tests pin the envelope
 // contract — any protocol change MUST update PROTOCOL.md + this file in the
@@ -34,5 +34,48 @@ describe('protocol envelope (PROTOCOL.md v0)', () => {
   it('envelope keys are exactly v,t,id,ts,d', () => {
     const e = env('welcome', { selfId: 'u1' });
     expect(Object.keys(e).sort()).toEqual(['d', 'id', 't', 'ts', 'v']);
+  });
+});
+
+// T2 media plane — ADDITIVE envelopes (docs/MEDIA.md). PROTOCOL.md v0 is not
+// amended; these pin the shapes the client and server exchange for the SFU.
+describe('media envelopes (T2, additive — docs/MEDIA.md)', () => {
+  it('media_join carries the target space', () => {
+    const e = env('media_join', { space: 'garden' });
+    expect(e.t).toBe('media_join');
+    expect(e.d).toMatchObject({ space: 'garden' });
+  });
+
+  it('media_leave is an empty payload', () => {
+    const e = env('media_leave', {});
+    expect(e.t).toBe('media_leave');
+    expect(e.d).toEqual({});
+  });
+
+  it('media_signal offer round-trips over JSON like the WS wire', () => {
+    const sig: MediaSignalMsg = {
+      pc: 'publisher',
+      type: 'offer',
+      sdp: { type: 'offer', sdp: 'v=0\r\nfake-sdp' },
+    };
+    const wire = JSON.parse(JSON.stringify(env('media_signal', sig))) as Envelope;
+    expect(wire.t).toBe('media_signal');
+    expect(wire.d).toMatchObject({
+      pc: 'publisher',
+      type: 'offer',
+      sdp: { type: 'offer', sdp: 'v=0\r\nfake-sdp' },
+    });
+  });
+
+  it('server->client media_state frame matches the documented shape', () => {
+    const frame: Envelope = JSON.parse(
+      '{"v":1,"t":"media_state","id":"m1","ts":1700000000000,"d":{"joined":true,"space":"garden","peers":[{"id":"u1","name":"Alice"}]}}',
+    );
+    expect(frame.t).toBe('media_state');
+    expect(frame.d).toMatchObject({
+      joined: true,
+      space: 'garden',
+      peers: [{ id: 'u1', name: 'Alice' }],
+    });
   });
 });
