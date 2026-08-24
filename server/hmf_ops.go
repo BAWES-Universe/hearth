@@ -60,6 +60,12 @@ func (h *Hub) applyEditOp(sp *SpaceState, c *Client, op *hmf.Op) *EditAck {
 			return ack
 		}
 		return ack
+	case "object":
+		if err := h.applyObjectOp(w, op); err != nil {
+			ack.Err = err.Error()
+			return ack
+		}
+		return ack
 	case "paint", "erase", "place":
 		// grid ops below
 	default:
@@ -211,6 +217,35 @@ func (h *Hub) applyZoneOp(w *World, op *hmf.Op) error {
 		return h.store.DeleteZone(w.ID, op.ZoneID)
 	}
 	return errors.New("edit_rejected: zone op requires zone payload or zoneId")
+}
+
+// applyObjectOp upserts or removes a functional object (door|npc|sign|light)
+// — RAM (World.Objects) + world_entities row. Object ids are client-chosen
+// (or server-generated when empty); kinds are validated against the frozen
+// object palette (hmf.ValidObjectKind).
+func (h *Hub) applyObjectOp(w *World, op *hmf.Op) error {
+	if op.Object != nil {
+		o := WorldObject{
+			ID: op.Object.ID, Kind: op.Object.Kind, X: op.Object.X, Y: op.Object.Y,
+			Name: op.Object.Name, Text: op.Object.Text, Data: op.Object.Data,
+		}
+		if o.ID == "" {
+			o.ID = "obj-" + randHex(6)
+		}
+		if !hmf.ValidObjectKind(o.Kind) {
+			return errors.New("edit_rejected: unknown object kind " + o.Kind)
+		}
+		if o.X < 0 || o.Y < 0 || o.X >= w.Width || o.Y >= w.Height {
+			return errors.New("edit_rejected: object outside map bounds")
+		}
+		w.UpsertObject(o)
+		return h.store.UpsertObject(w.ID, o)
+	}
+	if op.ObjectID != "" {
+		w.DeleteObject(op.ObjectID)
+		return h.store.DeleteObject(w.ID, op.ObjectID)
+	}
+	return errors.New("edit_rejected: object op requires object payload or objectId")
 }
 
 // persistChunk re-encodes one chunk from a pre-built grid snapshot and stores

@@ -5,7 +5,17 @@
 
 import { TILE_DEFS } from '../world/tiles';
 
-export type EditMode = 'play' | 'paint' | 'portal';
+export type EditMode = 'play' | 'paint' | 'portal' | 'objects';
+
+/** Functional object palette (server-validated kinds: door|npc|sign|light). */
+export type ObjectKind = 'door' | 'npc' | 'sign' | 'light';
+
+export const OBJECT_KINDS: { kind: ObjectKind; label: string; icon: string }[] = [
+  { kind: 'door', label: 'Door', icon: '🚪' },
+  { kind: 'npc', label: 'NPC', icon: '🤖' },
+  { kind: 'sign', label: 'Sign', icon: '📋' },
+  { kind: 'light', label: 'Light', icon: '💡' },
+];
 
 /** Swatch colors mirroring generateTileTextures() for quick picking. */
 const SWATCH: Record<number, string> = {
@@ -23,6 +33,7 @@ const MODE_HINT: Record<EditMode, string> = {
   play: 'Tap to move · pinch to zoom · drag to pan',
   paint: 'Paint mode — tap tiles to build · edits save live for everyone',
   portal: 'Portal mode — tap a tile to drop a portal back to town-square',
+  objects: 'Objects mode — tap a tile to place the selected object',
 };
 
 export function EditToolbar({
@@ -38,8 +49,12 @@ export function EditToolbar({
   isPublished,
   publishing,
   onPublish,
+  onInvite,
+  canEdit,
   online,
   mineCount,
+  objectKind,
+  onObjectKind,
 }: {
   mode: EditMode;
   onMode(m: EditMode): void;
@@ -53,8 +68,12 @@ export function EditToolbar({
   isPublished: boolean;
   publishing: boolean;
   onPublish(): void;
+  onInvite(): void;
+  canEdit: boolean;
   online: boolean;
   mineCount: number;
+  objectKind: ObjectKind;
+  onObjectKind(k: ObjectKind): void;
 }) {
   const inEdit = mode !== 'play';
   return (
@@ -98,10 +117,35 @@ export function EditToolbar({
           {mode === 'portal' && (
             <div class="portal-hint">↓ portal target: town-square (16, 16)</div>
           )}
+          {mode === 'objects' && (
+            <>
+              <div class="palette-row">
+                {OBJECT_KINDS.map((o) => (
+                  <button
+                    key={o.kind}
+                    class={`swatch object${objectKind === o.kind ? ' active' : ''}`}
+                    onClick={() => onObjectKind(o.kind)}
+                    title={`${o.label} — tap a tile to place`}
+                    aria-label={`Place ${o.label}`}
+                  >
+                    {o.icon}
+                  </button>
+                ))}
+              </div>
+              <div class="paint-how">
+                <span class="paint-how-text">tap a tile to place · doors are passable, npc/sign talk later</span>
+              </div>
+            </>
+          )}
           <div class="edit-actions">
             <button class="tool-btn" onClick={onUndo} disabled={!canUndo} title="Undo (compensating inverse op)">
               ↩ Undo
             </button>
+            {canEdit && (
+              <button class="tool-btn" onClick={onInvite} title="Invite a friend to co-edit this world">
+                🔗 Invite
+              </button>
+            )}
             <button
               class="tool-btn publish"
               onClick={onPublish}
@@ -114,7 +158,7 @@ export function EditToolbar({
         </div>
       )}
       <div class="mode-dock" role="tablist" aria-label="Editor mode">
-        {(['play', 'paint', 'portal'] as const).map((m) => (
+        {(['play', 'paint', 'portal', 'objects'] as const).map((m) => (
           <button
             key={m}
             role="tab"
@@ -122,7 +166,7 @@ export function EditToolbar({
             class={`mode-tab${mode === m ? ' active' : ''}`}
             onClick={() => onMode(m)}
           >
-            {m === 'play' ? 'Play' : m === 'paint' ? 'Paint' : 'Portal'}
+            {m === 'play' ? 'Play' : m === 'paint' ? 'Paint' : m === 'portal' ? 'Portal' : 'Objects'}
           </button>
         ))}
       </div>

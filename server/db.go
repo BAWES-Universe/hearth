@@ -179,13 +179,16 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (user_id, friend_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_friends_user ON friends(user_id, status)`,
-	// --- BYOK (Ox decision 2026-08-24): fingerprint-only key status + usage
-	// audit. There is NO key column anywhere — keys live client-side; the
-	// server keeps sha256(key)[:8] for status display and token usage rows. ---
-	byokStatusDDL,
-	aiUsageDDL,
-	aiUsageIdxDDL,
-	}
+		// --- BYOK (Ox decision 2026-08-24): fingerprint-only key status + usage
+		// audit. There is NO key column anywhere — keys live client-side; the
+		// server keeps sha256(key)[:8] for status display and token usage rows. ---
+		byokStatusDDL,
+		aiUsageDDL,
+		aiUsageIdxDDL,
+		// --- world ownership: edit ACL + single-use invite tokens (ownership.go) ---
+		worldEditorsDDL,
+		worldInvitesDDL,
+		}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
 			return fmt.Errorf("migrate: %w", err)
@@ -354,6 +357,9 @@ func (s *Store) SaveWorld(w *World) error {
 	if err := s.savePortals(w.ID, w.Portals); err != nil {
 		return err
 	}
+	if err := s.saveObjects(w.ID, w.Objects); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -520,6 +526,9 @@ func (s *Store) LoadWorld(id string) (*World, error) {
 		if err := s.loadPortals(id, &w); err != nil {
 			return nil, err
 		}
+	}
+	if err := s.loadObjects(id, &w); err != nil {
+		return nil, err
 	}
 	return &w, nil
 }
