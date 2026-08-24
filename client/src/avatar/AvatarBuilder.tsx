@@ -71,6 +71,7 @@ export function AvatarBuilder({
 
   return (
     <div
+      class="avatar-builder"
       style={{
         background: '#140f1c',
         border: '1px solid #3a2f4d',
@@ -79,10 +80,11 @@ export function AvatarBuilder({
         margin: '10px 0',
       }}
     >
-      <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
+      <div class="ab-row" style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
         {/* live preview */}
         <canvas
           ref={previewRef}
+          class="ab-preview"
           width={96}
           height={96}
           style={{
@@ -117,7 +119,12 @@ export function AvatarBuilder({
             ))}
           </div>
           {/* option grid (NPC-only options hidden) */}
-          <div role="group" aria-label={`${TAB_LABEL[tab]} options`} style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px', marginTop: '8px' }}>
+          <div
+            role="group"
+            aria-label={`${TAB_LABEL[tab]} options`}
+            class="ab-options"
+            style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '6px', marginTop: '8px' }}
+          >
             {layerOptions(tab).map((o) => {
               const sel = selected === o.id;
               return (
@@ -150,7 +157,7 @@ export function AvatarBuilder({
         </div>
       </div>
       {/* presets + save */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px' }}>
+      <div class="ab-presets" style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '10px' }}>
         <span style={{ fontSize: 11, color: '#8f83a8' }}>Presets</span>
         {AVATAR_PRESETS.map((p, i) => (
           <button

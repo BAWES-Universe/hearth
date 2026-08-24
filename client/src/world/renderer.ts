@@ -40,8 +40,16 @@ const SPEED = 4.5; // tiles / sec
 const MOVE_INTERVAL = 84; // ms (~12Hz)
 const AV_PX = 128;
 const AV_SCALE = 0.3; // 128 * 0.3 ≈ 38px on screen
+/** Default zoom-in cap. The floor is dynamic (zoomFloor) so a small phone can
+ *  still zoom out far enough to see the whole map as a coherent overview. */
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 2.5;
+const MIN_ZOOM_FLOOR = 0.12;
+/** Below this zoom, per-player labels + ownership markers fade out so the
+ *  zoomed-out map reads cleanly instead of a pile of floating text. */
+const LABEL_FADE_ZOOM = 0.4;
+
+type WalkPhase = 0 | 1 | 2 | 3;
 
 interface Remote {
   sprite: Sprite;
@@ -50,6 +58,10 @@ interface Remote {
   dir: string;
   /** spec cache key when this remote renders the layered composite. */
   specKey: string;
+  /** true while the interpolated position is actually changing. */
+  moving: boolean;
+  lastX: number;
+  lastY: number;
 }
 
 interface LocalPlayer {
@@ -157,16 +169,23 @@ export class WorldRenderer {
 
   private textures!: Record<number, Texture>;
   private dirTextures!: Record<string, Texture>;
-  /** Cached composite frames per spec (walk bob pairs per facing). */
+  /** Cached composite frames per spec (4 walk-bob frames per facing). */
   private specFrames = new Map<string, AvatarFrames>();
   private walkT = 0;
-  private walkPhase: 0 | 1 = 0;
+  private idleT = 0;
+  private walkPhase: WalkPhase = 0;
+  private idlePhase: 0 | 1 = 0;
 
   private tileSprites = new Map<string, Sprite>();
   private tiles = new Map<string, number>();
   private grid = new Uint8Array(0);
   private worldW = 32;
   private worldH = 32;
+
+  /** Thin amber corner ticks on tiles painted by the local player this session. */
+  private mineLayer = new Graphics();
+  /** Tiny motion streaks behind the local player while walking. */
+  private moveDust = new Graphics();
 
   private selfId = '';
   private local: LocalPlayer | null = null;
@@ -211,7 +230,7 @@ export class WorldRenderer {
     container.appendChild(cv);
 
     this.app.stage.addChild(this.world);
-    this.world.addChild(this.tileLayer, this.playerLayer);
+    this.world.addChild(this.tileLayer, this.mineLayer, this.moveDust, this.playerLayer);
     this.bindInput(cv);
     this.app.ticker.add((t) => this.tick(t.deltaMS / 1000));
   }
@@ -235,7 +254,10 @@ export class WorldRenderer {
     this.tileLayer.removeChildren();
     this.tileSprites.clear();
     this.tiles.clear();
-    this.grid = new Uint8Array(this.worldW * this.worldH);
+    // Sparse wire format: only non-floor tiles are serialized, so a fresh grid
+    // must default to PASSABLE (1) — otherwise every floor cell reads as
+    // impassable and tap-to-move silently fails everywhere.
+    this.grid = new Uint8Array(this.worldW * this.worldH).fill(1);
 
     for (const t of parsed.tiles) {
       const key = `${t.x},${t.y}`;
@@ -260,6 +282,8 @@ export class WorldRenderer {
     this.zoom = 1;
     this.pan = { x: 0, y: 0 };
     this.path = null;
+    this.mineLayer.clear();
+    this.moveDust.clear();
     if (this.local) {
       this.local.x = clamp(this.local.x, 0.5, this.worldW - 0.5);
       this.local.y = clamp(this.local.y, 0.5, this.worldH - 0.5);
@@ -267,15 +291,33 @@ export class WorldRenderer {
     }
   }
 
+  /** Paint (or erase, tileId 0) a single cell. Creates/removes sprites so
+   *  painting onto implicit floor actually shows up locally. */
   paintTile(x: number, y: number, tileId: number): void {
     const key = `${x},${y}`;
+    const inBounds = x >= 0 && x < this.worldW && y >= 0 && y < this.worldH;
     const sp = this.tileSprites.get(key);
-    if (!sp) return;
-    this.tiles.set(key, tileId);
-    sp.texture = this.textures[tileId] ?? this.textures[99];
-    if (x >= 0 && x < this.worldW && y >= 0 && y < this.worldH) {
-      this.grid[y * this.worldW + x] = isPassableTile(tileId) ? 1 : 0;
+    if (tileId === 0) {
+      // erase → remove the sprite (floor is implicit)
+      if (sp) {
+        this.tileLayer.removeChild(sp);
+        this.tileSprites.delete(key);
+      }
+      this.tiles.delete(key);
+      if (inBounds) this.grid[y * this.worldW + x] = 1;
+      this.path = null;
+      return;
     }
+    if (!sp) {
+      const ns = new Sprite(this.textures[tileId] ?? this.textures[99]);
+      ns.position.set(x * TILE, y * TILE);
+      this.tileLayer.addChild(ns);
+      this.tileSprites.set(key, ns);
+    } else {
+      sp.texture = this.textures[tileId] ?? this.textures[99];
+    }
+    this.tiles.set(key, tileId);
+    if (inBounds) this.grid[y * this.worldW + x] = isPassableTile(tileId) ? 1 : 0;
     this.path = null; // path may be invalidated by an edit
   }
 
@@ -300,7 +342,9 @@ export class WorldRenderer {
       sprite.scale.set(AV_SCALE);
       sprite.tint = color;
     }
-    const ring = new Graphics().circle(0, 0, 22).stroke({ width: 3, color: 0xf59e0b, alpha: 0.9 });
+    const ring = new Graphics();
+    ring.circle(0, 0, 16).fill({ color: 0xf59e0b, alpha: 0.1 });
+    ring.circle(0, 0, 16).stroke({ width: 2, color: 0xf59e0b, alpha: 0.45 });
     const label = this.makeLabel(name || 'you', color);
     this.local = {
       x: this.worldW / 2 + 0.5,
@@ -365,7 +409,7 @@ export class WorldRenderer {
       }
       const label = this.makeLabel(name || id.slice(0, 6), color);
       this.playerLayer.addChild(sprite, label);
-      rem = { sprite, label, buf: new InterpBuffer(100), dir: 'down', specKey };
+      rem = { sprite, label, buf: new InterpBuffer(100), dir: 'down', specKey, moving: false, lastX: -1, lastY: -1 };
       this.remotes.set(id, rem);
     } else if (avatar?.spec && rem.specKey !== specKeyOf(avatar.spec)) {
       // layered spec may arrive on a later state tick — upgrade in place
@@ -397,7 +441,7 @@ export class WorldRenderer {
     let f = this.specFrames.get(key);
     if (!f) {
       const mk = (dir: 'down' | 'up' | 'right') =>
-        [0, 1].map((ph) => Texture.from(renderAvatarSpec(spec, { dir, phase: ph as 0 | 1 })));
+        [0, 1, 2, 3].map((ph) => Texture.from(renderAvatarSpec(spec, { dir, phase: ph as WalkPhase })));
       f = { down: mk('down'), up: mk('up'), right: mk('right') };
       this.specFrames.set(key, f);
     }
@@ -415,16 +459,29 @@ export class WorldRenderer {
       text,
       style: {
         fontFamily: 'system-ui, sans-serif',
-        fontSize: 12,
+        fontSize: 11,
         fill: color,
-        stroke: { color: '#0b0812', width: 3 },
+        stroke: { color: '#0b0812', width: 2.5 },
       },
     });
     t.anchor.set(0.5, 0);
+    t.alpha = 0.9;
     return t;
   }
 
   // ---------------------------------------------------------------- input
+
+  /**
+   * Smallest zoom that still lets the whole world fit the screen (capped at
+   * MIN_ZOOM so desktop stays reasonable). Lets mobile users zoom out to a
+   * coherent map overview instead of a wall of tiles.
+   */
+  private zoomFloor(): number {
+    const w = this.app?.screen.width ?? 800;
+    const h = this.app?.screen.height ?? 600;
+    const fit = Math.min(w / (this.worldW * TILE), h / (this.worldH * TILE)) * 0.96;
+    return clamp(fit, MIN_ZOOM_FLOOR, MIN_ZOOM);
+  }
 
   private bindInput(cv: HTMLCanvasElement): void {
     cv.addEventListener('pointerdown', (e) => this.onDown(cv, e));
@@ -436,7 +493,7 @@ export class WorldRenderer {
       (e) => {
         e.preventDefault();
         const f = Math.exp(-e.deltaY * 0.0012);
-        this.zoom = clamp(this.zoom * f, MIN_ZOOM, MAX_ZOOM);
+        this.zoom = clamp(this.zoom * f, this.zoomFloor(), MAX_ZOOM);
       },
       { passive: false },
     );
@@ -477,7 +534,7 @@ export class WorldRenderer {
       const midX = (a.x + b.x) / 2;
       const midY = (a.y + b.y) / 2;
       if (this.pinch.dist > 0) {
-        this.zoom = clamp((this.zoom * dist) / this.pinch.dist, MIN_ZOOM, MAX_ZOOM);
+        this.zoom = clamp((this.zoom * dist) / this.pinch.dist, this.zoomFloor(), MAX_ZOOM);
       }
       this.pan.x += (midX - this.pinch.midX) / this.zoom;
       this.pan.y += (midY - this.pinch.midY) / this.zoom;
@@ -508,9 +565,9 @@ export class WorldRenderer {
       const cur = this.pos(cv, e);
       const moved = Math.hypot(cur.x - this.dragStart.x, cur.y - this.dragStart.y);
       if (moved < 10 && performance.now() - this.dragStart.t < 500) {
-        const wx = (cur.x - this.world.position.x) / this.zoom;
-        const wy = (cur.y - this.world.position.y) / this.zoom;
-        this.startMoveTo(Math.floor(wx / TILE), Math.floor(wy / TILE));
+        // screenToTile is the single source of truth for world<->screen math
+        const tile = this.screenToTile(cur.x, cur.y);
+        if (tile) this.startMoveTo(tile.x, tile.y);
       }
     }
     if (this.pointers.size === 0) {
@@ -525,20 +582,37 @@ export class WorldRenderer {
     const now = performance.now();
     this.stepPath(dt);
     this.updateCamera(dt);
-    // walk bob: 2-frame cycle at 4Hz while the local player is moving
+    // walk: 4-frame cycle at 8Hz (0.125s/frame) while moving; gentle 2-frame
+    // idle bob (0.45s/frame) while standing — both local and remote.
     const moving = !!this.local && (!!this.path || !!this.local.dirty);
-    if (moving) this.walkT += dt;
-    else this.walkT = 0;
-    this.walkPhase = (Math.floor(this.walkT / 0.25) % 2) as 0 | 1;
-    this.syncLocal();
+    if (moving) {
+      this.walkT += dt;
+      this.idleT = 0;
+    } else {
+      this.walkT = 0;
+      this.idleT += dt;
+    }
+    this.walkPhase = (Math.floor(this.walkT / 0.125) % 4) as WalkPhase;
+    this.idlePhase = (Math.floor(this.idleT / 0.45) % 2) as 0 | 1;
+
+    const labelsVisible = this.zoom >= LABEL_FADE_ZOOM;
+    this.mineLayer.alpha = labelsVisible ? 1 : 0;
+    const ph = moving ? this.walkPhase : (this.idlePhase as WalkPhase);
+    this.syncLocal(ph, moving, labelsVisible);
     for (const r of this.remotes.values()) {
       const s = r.buf.get(now);
       if (s) {
         r.sprite.position.set(s.x * TILE, s.y * TILE);
         r.label.position.set(s.x * TILE, s.y * TILE - 8);
-        this.applyCompositePhase(r, this.walkPhase);
+        const dx = s.x - r.lastX;
+        const dy = s.y - r.lastY;
+        r.moving = dx * dx + dy * dy > 1e-6;
+        r.lastX = s.x;
+        r.lastY = s.y;
+        this.applyCompositePhase(r, r.moving ? this.walkPhase : (this.idlePhase as WalkPhase));
       }
       r.buf.prune(now);
+      r.label.alpha = labelsVisible ? 0.9 : 0;
     }
     this.maybeSendMove(now);
   }
@@ -594,16 +668,37 @@ export class WorldRenderer {
     this.world.scale.set(z);
   }
 
-  private syncLocal(): void {
+  private syncLocal(ph: WalkPhase, moving: boolean, labelsVisible: boolean): void {
     const l = this.local;
     if (!l) return;
     l.sprite.position.set(l.x * TILE, l.y * TILE);
     l.ring.position.set(l.x * TILE, l.y * TILE);
     l.label.position.set(l.x * TILE, l.y * TILE - 8);
+    l.label.alpha = labelsVisible ? 0.9 : 0;
+    // motion dust: small streaks behind the player while walking
+    this.moveDust.clear();
+    if (moving) {
+      const bx = l.x * TILE;
+      const by = l.y * TILE;
+      const d: Record<string, [number, number]> = {
+        down: [0, 1],
+        up: [0, -1],
+        left: [-1, 0],
+        right: [1, 0],
+      };
+      const [dx, dy] = d[l.dir] ?? [0, 1];
+      const step = this.walkPhase % 2 === 0 ? 0 : 1;
+      this.moveDust
+        .circle(bx - dx * 9 - dy * 5, by + 4 - dy * 4 + step * 2, 2.4)
+        .fill({ color: 0xf59e0b, alpha: 0.35 });
+      this.moveDust
+        .circle(bx - dx * 15 - dy * 8, by + 2 - dy * 2 - step * 2, 1.8)
+        .fill({ color: 0xf59e0b, alpha: 0.22 });
+    }
     if (l.specKey) {
       const frames = this.specFrames.get(l.specKey);
       if (frames) {
-        const tex = frames[this.dirKey(l.dir)][this.walkPhase];
+        const tex = frames[this.dirKey(l.dir)][ph];
         if (l.sprite.texture !== tex) l.sprite.texture = tex;
       }
       return;
@@ -612,12 +707,12 @@ export class WorldRenderer {
     if (l.sprite.texture !== tex) l.sprite.texture = tex;
   }
 
-  /** Bobs a composite remote sprite between its two walk frames. */
-  private applyCompositePhase(r: Remote, phase: 0 | 1): void {
+  /** Cycles a composite remote sprite through its walk/idle frames. */
+  private applyCompositePhase(r: Remote, ph: WalkPhase): void {
     if (!r.specKey) return;
     const frames = this.specFrames.get(r.specKey);
     if (!frames) return;
-    const tex = frames[this.dirKey(r.dir)][phase];
+    const tex = frames[this.dirKey(r.dir)][ph];
     if (r.sprite.texture !== tex) r.sprite.texture = tex;
   }
 
@@ -683,6 +778,41 @@ export class WorldRenderer {
 
   getWorldSize(): { w: number; h: number } {
     return { w: this.worldW, h: this.worldH };
+  }
+
+  getZoom(): number {
+    return this.zoom;
+  }
+
+  /**
+   * Redraws the "you painted this tile" corner ticks. Keys are "x,y" strings.
+   * Fades out automatically when zoomed far out (see tick).
+   */
+  setMineTiles(keys: Iterable<string>): void {
+    this.mineLayer.clear();
+    const L = 5; // tick arm length
+    const G = 3; // inset from tile corner
+    for (const k of keys) {
+      const [x, y] = k.split(',').map(Number);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const px = x * TILE;
+      const py = y * TILE;
+      // four corner L-ticks
+      this.mineLayer
+        .moveTo(px + G, py + G + L)
+        .lineTo(px + G, py + G)
+        .lineTo(px + G + L, py + G)
+        .moveTo(px + TILE - G - L, py + G)
+        .lineTo(px + TILE - G, py + G)
+        .lineTo(px + TILE - G, py + G + L)
+        .moveTo(px + G, py + TILE - G - L)
+        .lineTo(px + G, py + TILE - G)
+        .lineTo(px + G + L, py + TILE - G)
+        .moveTo(px + TILE - G - L, py + TILE - G)
+        .lineTo(px + TILE - G, py + TILE - G)
+        .lineTo(px + TILE - G, py + TILE - G - L);
+    }
+    this.mineLayer.stroke({ width: 1.5, color: 0xf59e0b, alpha: 0.8 });
   }
 
   /** Teleport the local player to a world tile (portal arrival), clamped. */
