@@ -72,7 +72,40 @@ export interface EditMsg {
   x?: number;
   y?: number;
   tileId?: number;
+  priorTileId?: number;
+  portalId?: string;
+  portal?: PortalPayload;
   by?: string;
+  seq?: number;
+  applied?: boolean;
+}
+
+/** HMF v1 portal payload (mirrors server/hmf.Portal JSON). */
+export interface PortalPayload {
+  id: string;
+  x: number;
+  y: number;
+  targetSpace: string;
+  targetX: number;
+  targetY: number;
+}
+
+/** Outbound editor op (frozen HMF v1 ops: paint|erase|place|zone|portal|publish). */
+export interface EditOut {
+  op: string;
+  x?: number;
+  y?: number;
+  tileId?: number;
+  portal?: PortalPayload;
+  portalId?: string;
+}
+
+/** Server ack for a portal walk-through: swap to spaceId at (x, y). */
+export interface PortalMsg {
+  portalId?: string;
+  spaceId?: string;
+  x?: number;
+  y?: number;
 }
 
 export interface ErrMsg {

@@ -657,4 +657,41 @@ export class WorldRenderer {
   getLocal(): { x: number; y: number; dir: string } | null {
     return this.local ? { x: this.local.x, y: this.local.y, dir: this.local.dir } : null;
   }
+
+  // ------------------------------------------- additive camera helpers (S2)
+  // Read-only world<->screen projection used by the S2 editor overlay + portal
+  // markers. Purely additive: no renderer behavior changes.
+
+  /** World tile center -> screen pixels (CSS px, relative to the canvas). */
+  project(tx: number, ty: number): { x: number; y: number } | null {
+    if (!this.app) return null;
+    const z = this.world.scale.x;
+    const p = this.world.position;
+    return { x: p.x + (tx + 0.5) * TILE * z, y: p.y + (ty + 0.5) * TILE * z };
+  }
+
+  /** Screen pixels -> world tile cell (or null when outside the world). */
+  screenToTile(px: number, py: number): { x: number; y: number } | null {
+    if (!this.app) return null;
+    const z = this.world.scale.x;
+    const p = this.world.position;
+    const x = Math.floor(((px - p.x) / z) / TILE);
+    const y = Math.floor(((py - p.y) / z) / TILE);
+    if (x < 0 || y < 0 || x >= this.worldW || y >= this.worldH) return null;
+    return { x, y };
+  }
+
+  getWorldSize(): { w: number; h: number } {
+    return { w: this.worldW, h: this.worldH };
+  }
+
+  /** Teleport the local player to a world tile (portal arrival), clamped. */
+  setLocalPos(x: number, y: number): void {
+    if (!this.local) return;
+    this.local.x = clamp(x, 0.5, this.worldW - 0.5);
+    this.local.y = clamp(y, 0.5, this.worldH - 0.5);
+    this.local.dirty = true;
+    this.path = null;
+    this.pathIdx = 0;
+  }
 }

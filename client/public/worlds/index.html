@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Hearth — Worlds</title>
+    <script>
+      // SPA shim: the Go server serves static files only, so /worlds lands
+      // here and hands off to the client router (?view=worlds). No reload loop.
+      location.replace('/?view=worlds');
+    </script>
+  </head>
+  <body>
+    <p style="font-family: system-ui; color: #9b91b0; padding: 24px">
+      Opening the Hearth directory…
+    </p>
+  </body>
+</html>

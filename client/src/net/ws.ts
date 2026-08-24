@@ -2,7 +2,7 @@
 // exponential backoff + jitter, re-join on open (server re-sends welcome →
 // client resyncs full state).
 
-import { env, type BotMsg, type ChatMsg, type EditMsg, type ErrMsg, type StateEntry, type Welcome } from './protocol';
+import { env, type BotMsg, type ChatMsg, type EditMsg, type EditOut, type ErrMsg, type PortalMsg, type StateEntry, type Welcome } from './protocol';
 import type { AvatarInfo } from '../avatar/spec';
 
 export type NetStatus = 'connecting' | 'online' | 'reconnecting' | 'offline';
@@ -22,6 +22,7 @@ export interface NetHandlers {
   onState(d: StateEntry[]): void;
   onChat(d: ChatMsg): void;
   onEdit(d: EditMsg): void;
+  onPortal?(d: PortalMsg): void;
   onError(d: ErrMsg): void;
   onBotMsg?(d: BotMsg): void;
 }
@@ -116,6 +117,9 @@ export class Net {
       case 'edit':
         this.h.onEdit((msg.d ?? {}) as EditMsg);
         break;
+      case 'portal':
+        this.h.onPortal?.((msg.d ?? {}) as PortalMsg);
+        break;
       case 'error':
         this.h.onError((msg.d ?? {}) as ErrMsg);
         break;
@@ -139,6 +143,16 @@ export class Net {
 
   sendChat(channel: string, text: string, nonce: string): void {
     this.send(env('chat', { channel, text, nonce }));
+  }
+
+  /** Send one frozen HMF v1 editor op (paint|erase|place|zone|portal|publish). */
+  sendEdit(op: EditOut): void {
+    this.send(env('edit', op));
+  }
+
+  /** Request a portal walk-through (server validates proximity + publish). */
+  sendPortal(portalId: string): void {
+    this.send(env('portal', { portalId }));
   }
 
   close(): void {
