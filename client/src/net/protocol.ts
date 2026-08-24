@@ -48,6 +48,8 @@ export interface Welcome {
   world?: unknown;
   roster?: RosterEntry[];
   avatar?: AvatarInfo;
+  /** Server-arbitrated edit permission (owner/editor/showcase ⇒ true; guests false). */
+  canEdit?: boolean;
 }
 
 export interface StateEntry {
@@ -61,9 +63,10 @@ export interface StateEntry {
 export interface ChatMsg {
   channel?: 'proximity' | 'space' | 'global' | 'dm';
   from?: string;
+  fromId?: string;
+  nonce?: string;
   text: string;
   seq?: number;
-  nonce?: string;
   ts?: number;
 }
 
@@ -75,9 +78,21 @@ export interface EditMsg {
   priorTileId?: number;
   portalId?: string;
   portal?: PortalPayload;
+  objectId?: string;
+  object?: ObjectPayload;
   by?: string;
   seq?: number;
   applied?: boolean;
+}
+
+/** Functional object placed via the editor (door | npc | sign | light). */
+export interface ObjectPayload {
+  id?: string;
+  kind: string;
+  x: number;
+  y: number;
+  name?: string;
+  text?: string;
 }
 
 /** HMF v1 portal payload (mirrors server/hmf.Portal JSON). */
