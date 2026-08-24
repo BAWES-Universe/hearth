@@ -240,29 +240,38 @@ func (h *Hub) listWorlds(w http.ResponseWriter, r *http.Request) {
 	// keep directory ranking fresh (cron also runs nightly)
 	h.store.ensureGravityFresh()
 
-	rows, err := h.store.db.Query(`SELECT id FROM spaces WHERE is_published = 1`)
+	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	out, err := h.directory(q)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
 		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "worlds": out})
+}
+
+// directory returns the published-worlds directory (gravity desc, recency
+// desc, id asc; optional q name filter). Shared by the REST endpoint
+// (listWorlds) and the MCP worlds.list tool (server/mcp_adapter.go).
+func (h *Hub) directory(q string) ([]map[string]any, error) {
+	rows, err := h.store.db.Query(`SELECT id FROM spaces WHERE is_published = 1`)
+	if err != nil {
+		return nil, err
 	}
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
 			rows.Close()
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
-			return
+			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
-		return
+		return nil, err
 	}
 	rows.Close()
 
-	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	type dirEntry struct {
 		id      string
 		name    string
@@ -321,5 +330,5 @@ func (h *Hub) listWorlds(w http.ResponseWriter, r *http.Request) {
 			"thumbnail":     nil, // S2 renders from HMF v1; placeholder for now
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "worlds": out})
+	return out, nil
 }
