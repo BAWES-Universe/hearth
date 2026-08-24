@@ -165,6 +165,20 @@ func (s *Store) migrate() error {
 			world_json TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_snapshots_space ON snapshots(space_id)`,
+		// T2 social layer — the friendship graph. One row PER DIRECTION so a
+		// viewer's own row carries their perspective: 'pending' (outgoing
+		// request, waiting on the other side), 'requested' (incoming request,
+		// awaiting my decision), 'accepted' (mutual). A request inserts both
+		// rows in one transaction; accept/decline/remove flip or delete both.
+		`CREATE TABLE IF NOT EXISTS friends (
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			friend_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			status TEXT NOT NULL DEFAULT 'pending',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY (user_id, friend_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_friends_user ON friends(user_id, status)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {

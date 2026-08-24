@@ -2,7 +2,7 @@
 // exponential backoff + jitter, re-join on open (server re-sends welcome →
 // client resyncs full state).
 
-import { env, type BotMsg, type ChatMsg, type EditMsg, type EditOut, type ErrMsg, type PortalMsg, type StateEntry, type Welcome } from './protocol';
+import { env, type BotMsg, type ChatMsg, type EditMsg, type EditOut, type ErrMsg, type FriendMsg, type FriendPresenceMsg, type MediaSignalMsg, type MediaStateMsg, type PortalMsg, type StateEntry, type Welcome } from './protocol';
 import type { AvatarInfo } from '../avatar/spec';
 
 export type NetStatus = 'connecting' | 'online' | 'reconnecting' | 'offline';
@@ -25,6 +25,10 @@ export interface NetHandlers {
   onPortal?(d: PortalMsg): void;
   onError(d: ErrMsg): void;
   onBotMsg?(d: BotMsg): void;
+  onMediaSignal?(d: MediaSignalMsg): void;
+  onMediaState?(d: MediaStateMsg): void;
+  onFriend?(d: FriendMsg): void;
+  onFriendPresence?(d: FriendPresenceMsg): void;
 }
 
 const BASE_DELAY = 500;
@@ -126,6 +130,18 @@ export class Net {
       case 'bot_msg':
         this.h.onBotMsg?.((msg.d ?? {}) as BotMsg);
         break;
+      case 'media_signal':
+        this.h.onMediaSignal?.((msg.d ?? {}) as MediaSignalMsg);
+        break;
+      case 'media_state':
+        this.h.onMediaState?.((msg.d ?? {}) as MediaStateMsg);
+        break;
+      case 'friend':
+        this.h.onFriend?.((msg.d ?? {}) as FriendMsg);
+        break;
+      case 'friend_presence':
+        this.h.onFriendPresence?.((msg.d ?? {}) as FriendPresenceMsg);
+        break;
       default:
         break;
     }
@@ -153,6 +169,26 @@ export class Net {
   /** Request a portal walk-through (server validates proximity + publish). */
   sendPortal(portalId: string): void {
     this.send(env('portal', { portalId }));
+  }
+
+  /** Join the voice bubble of a space (additive T2 envelope, docs/MEDIA.md). */
+  sendMediaJoin(space: string): void {
+    this.send(env('media_join', { space }));
+  }
+
+  /** Leave the voice bubble. */
+  sendMediaLeave(): void {
+    this.send(env('media_leave', {}));
+  }
+
+  /** One SFU signaling frame (offer/answer/ice) toward the media plane. */
+  sendMediaSignal(d: {
+    pc: 'publisher' | 'subscriber';
+    type: 'offer' | 'answer' | 'ice';
+    sdp?: unknown;
+    candidate?: unknown;
+  }): void {
+    this.send(env('media_signal', d));
   }
 
   close(): void {

@@ -117,3 +117,55 @@ export interface BotMsg {
   botId?: string;
   text?: string;
 }
+
+// --- T2 media plane (additive envelopes, docs/MEDIA.md — PROTOCOL.md v0 untouched) ---
+
+/** SFU signaling frame: server relays media.SignalMsg 1:1 (d adds peerId). */
+export interface MediaSignalMsg {
+  peerId?: string;
+  pc: 'publisher' | 'subscriber';
+  type: 'offer' | 'answer' | 'ice' | 'joined' | 'left' | 'slots' | 'topk';
+  sdp?: { type: string; sdp: string };
+  candidate?: RTCIceCandidateInit;
+  mid?: string;
+  slot?: number;
+  kind?: string;
+  rung?: string;
+  /** Pre-negotiated subscriber layout, sent once per join: {audio, video, screen}. */
+  slots?: { audio: number; video: number; screen: number };
+}
+
+/** One voice-bubble member (id = entity/session id — matches roster ids). */
+export interface MediaPeer {
+  id: string;
+  name: string;
+}
+
+/** Bubble membership frame: joined/left ack + current member list. */
+export interface MediaStateMsg {
+  joined?: boolean;
+  space?: string;
+  peers?: MediaPeer[];
+}
+
+// T2 social layer (docs/SOCIAL.md) — ADDITIVE envelopes, PROTOCOL.md frozen
+// contract untouched. {t:'friend'} = a friend-relation status changed for me;
+// {t:'friend_presence'} = a friend joined/left a space or went offline/online.
+export type FriendEvent = 'request' | 'accept' | 'decline' | 'remove';
+
+export interface FriendMsg {
+  event?: FriendEvent;
+  userId?: string;
+  name?: string;
+  status?: 'pending' | 'requested' | 'accepted';
+}
+
+export type FriendPresenceEvent = 'join' | 'leave' | 'offline';
+
+export interface FriendPresenceMsg {
+  event?: FriendPresenceEvent;
+  userId?: string;
+  name?: string;
+  online?: boolean;
+  spaceId?: string;
+}

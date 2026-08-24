@@ -4,6 +4,8 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+
+	"hearth/media"
 )
 
 const (
@@ -287,7 +289,8 @@ func (sp *SpaceState) Bots() []*Entity {
 	return out
 }
 
-// Hub owns all spaces, clients, the 12Hz broadcaster and the bot sim.
+// Hub owns all spaces, clients, the 12Hz broadcaster, the bot sim and the
+// SFU media plane (media_bridge.go).
 type Hub struct {
 	mu         sync.RWMutex
 	store      *Store
@@ -298,6 +301,8 @@ type Hub struct {
 	closed     chan struct{}
 	once       sync.Once
 	bots       *BotManager // S7 headless builder bot registry (bot.go)
+	sfu        *media.Media
+	bubbles    map[string]string // peerID (entity/session id) -> spaceID voice bubble
 }
 
 func NewHub(store *Store) *Hub {
@@ -309,10 +314,13 @@ func NewHub(store *Store) *Hub {
 		unregister: make(chan *Client, 64),
 		closed:     make(chan struct{}),
 		bots:       NewBotManager(),
+		sfu:        newMediaSFU(),
+		bubbles:    map[string]string{},
 	}
 	for _, w := range store.ListWorlds() {
 		h.spaces[w.ID] = NewSpaceState(w)
 	}
+	go h.mediaRelay()
 	return h
 }
 
@@ -373,8 +381,14 @@ func (h *Hub) removeClient(c *Client) {
 		if sp := h.space(spaceID); sp != nil {
 			sp.RemoveEntity(ent)
 		}
+		h.dropBubble(ent.ID)
 		c.setEntity(nil)
 		c.setSpace("")
+		// T2 social: friends learn the user went offline
+		h.notifyFriendPresence(ent.UserID, map[string]any{
+			"event": "offline", "userId": ent.UserID, "name": ent.Name,
+			"online": false, "spaceId": "",
+		})
 	}
 }
 
