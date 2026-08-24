@@ -132,6 +132,40 @@ type Zone struct {
 	H    int    `json:"h"`
 }
 
+// ObjectKind is a functional object placed by the editor (place op with an
+// object payload — additive extension of the frozen 'place' op, never a new
+// op kind). Kinds: door | npc | sign | light.
+type ObjectKind string
+
+const (
+	ObjDoor  ObjectKind = "door"
+	ObjNPC   ObjectKind = "npc"
+	ObjSign  ObjectKind = "sign"
+	ObjLight ObjectKind = "light"
+)
+
+// ValidObjectKind reports whether k is a known functional object kind.
+func ValidObjectKind(k string) bool {
+	switch ObjectKind(k) {
+	case ObjDoor, ObjNPC, ObjSign, ObjLight:
+		return true
+	}
+	return false
+}
+
+// Object is a functional object payload (place op extension) / persisted
+// world_entities row: kind + position + human fields (name/text) + free-form
+// data. The server validates kind + bounds; clients render each kind.
+type Object struct {
+	ID   string         `json:"id"`
+	Kind string         `json:"kind"` // door|npc|sign|light
+	X    int            `json:"x"`
+	Y    int            `json:"y"`
+	Name string         `json:"name,omitempty"`
+	Text string         `json:"text,omitempty"`
+	Data map[string]any `json:"data,omitempty"`
+}
+
 // Op is one frozen HMF v1 editor operation. Every mutation of a world is an
 // Op; ops are server-arbitrated (LWW by arrival order) and persisted to the
 // op_log for replay / build history.
@@ -152,6 +186,12 @@ type Op struct {
 	// Zone placement (add/upsert) or ZoneID-only for removal.
 	Zone   *Zone  `json:"zone,omitempty"`
 	ZoneID string `json:"zoneId,omitempty"`
+
+	// Object placement (add/upsert) or ObjectID-only for removal. Additive
+	// extension of the frozen 'place' op: a place op MAY carry an object
+	// payload (kind door|npc|sign|light). The op kind stays 'place'.
+	Object   *Object `json:"object,omitempty"`
+	ObjectID string  `json:"objectId,omitempty"`
 
 	// Chunk fetch (chunk_get request): which chunk the client wants.
 	CX int `json:"cx,omitempty"`

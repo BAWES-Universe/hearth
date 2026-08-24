@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import {
+  createInvite,
   createWorld,
   fetchSpace,
   listWorlds,
@@ -21,7 +22,7 @@ import { uuid, type EditMsg, type FriendMsg, type FriendPresenceMsg, type Portal
 import { ChatSheet, type ChatMessage } from './ui/ChatSheet';
 import { Hud } from './ui/Hud';
 import { JoinScreen } from './ui/JoinScreen';
-import { EditToolbar, type EditMode } from './ui/EditToolbar';
+import { EditToolbar, type EditMode, type ObjectKind } from './ui/EditToolbar';
 import { WorldsDirectory } from './ui/WorldsDirectory';
 import { VoiceBubble } from './ui/VoiceBubble';
 import { ByokPanel } from './ui/ByokPanel';
@@ -44,12 +45,13 @@ interface PortalMarker {
 
 /** One self-edit recorded for compensating-inverse undo (stack >= 50). */
 interface UndoEntry {
-  op: 'paint' | 'erase' | 'portal';
+  op: 'paint' | 'erase' | 'portal' | 'object';
   x: number;
   y: number;
   tileId?: number;
   priorTileId?: number;
   portalId?: string;
+  objectId?: string;
 }
 
 const UNDO_CAP = 100;
@@ -105,6 +107,9 @@ export function App() {
   const [mode, setMode] = useState<EditMode>('play');
   const [brush, setBrush] = useState(1);
   const [erasing, setErasing] = useState(false);
+  const [objectKind, setObjectKind] = useState<ObjectKind>('door');
+  /** Server-arbitrated edit permission (welcome + spaces REST envelope). */
+  const [canEdit, setCanEdit] = useState(true);
   const [undoCount, setUndoCount] = useState(0);
   const [portals, setPortals] = useState<PortalMarker[]>([]);
   const [teleporting, setTeleporting] = useState(false);
@@ -134,6 +139,8 @@ export function App() {
   const modeRef = useRef<EditMode>('play');
   const brushRef = useRef(1);
   const erasingRef = useRef(false);
+  const objectKindRef = useRef<ObjectKind>('door');
+  const canEditRef = useRef(true);
   const portalsRef = useRef<PortalMarker[]>([]);
   const undoRef = useRef<UndoEntry[]>([]);
   /** "x,y" tiles whose current state is a paint by the local player. */
@@ -147,6 +154,8 @@ export function App() {
   modeRef.current = mode;
   brushRef.current = brush;
   erasingRef.current = erasing;
+  objectKindRef.current = objectKind;
+  canEditRef.current = canEdit;
 
   const showToast = useCallback((t: string) => {
     setToast(t);
@@ -284,7 +293,13 @@ export function App() {
       return;
     }
     const stack = undoRef.current;
-    if (d.op === 'portal') {
+    if (d.op === 'object') {
+      // functional object placement → undo removes by id (server delete op)
+      const oid = d.object?.id ?? d.objectId;
+      const ox = d.object?.x ?? d.x ?? 0;
+      const oy = d.object?.y ?? d.y ?? 0;
+      if (oid) stack.push({ op: 'object', x: ox, y: oy, objectId: oid });
+    } else if (d.op === 'portal') {
       if (d.portal) {
         stack.push({ op: 'portal', x: d.portal.x, y: d.portal.y, portalId: d.portal.id });
       } else if (d.portalId) {
@@ -363,8 +378,9 @@ export function App() {
           setPortals(portalsRef.current);
           r?.setWorld(sp);
           resetMine();
-          const doc = sp as { isPublished?: boolean; isShowcase?: boolean };
+          const doc = sp as { isPublished?: boolean; isShowcase?: boolean; canEdit?: boolean };
           setIsPublished(doc.isPublished === true);
+          if (typeof doc.canEdit === 'boolean') setCanEdit(doc.canEdit);
         }
         r?.setSelf(selfIdRef.current, selfNameRef.current || 'you', { spec: specRef.current });
         if (typeof d.x === 'number' && typeof d.y === 'number') r?.setLocalPos(d.x, d.y);
@@ -399,6 +415,7 @@ export function App() {
           selfIdRef.current = d.selfId;
           const r = rendererRef.current;
           if (!r) return;
+          setCanEdit(d.canEdit !== false);
           if (d.world) {
             portalsRef.current = extractPortals(d.world);
             setPortals(portalsRef.current);
@@ -560,9 +577,9 @@ export function App() {
   }, [refreshWorlds]);
 
   const createAndEnter = useCallback(
-    async (name: string) => {
+    async (name: string, template = 'empty_lot') => {
       setCreatingWorld(true);
-      const doc = await createWorld(name, deviceKey());
+      const doc = await createWorld(name, deviceKey(), { template });
       setCreatingWorld(false);
       if (!doc) {
         showToast('Could not create world — try again');
@@ -574,6 +591,23 @@ export function App() {
     },
     [enterWorld, navTo, showToast],
   );
+
+  const invite = useCallback(async () => {
+    const id = lastSpaceRef.current;
+    if (!id) return;
+    const token = await createInvite(id);
+    if (!token) {
+      showToast('Invite failed — try again');
+      return;
+    }
+    const link = `${window.location.origin}/?space=${encodeURIComponent(id)}&invite=${encodeURIComponent(token)}`;
+    try {
+      await navigator.clipboard.writeText(link);
+      showToast('Invite link copied to clipboard');
+    } catch {
+      showToast(`Invite: ${link}`);
+    }
+  }, [showToast]);
 
   const publish = useCallback(async () => {
     const id = lastSpaceRef.current;
@@ -598,7 +632,10 @@ export function App() {
     const net = netRef.current;
     if (!net) return;
     skipRecordRef.current = true; // don't re-record the compensating op
-    if (u.op === 'portal' && u.portalId) {
+    if (u.op === 'object' && u.objectId) {
+      net.sendEdit({ op: 'object', objectId: u.objectId });
+      showToast('Removed object');
+    } else if (u.op === 'portal' && u.portalId) {
       net.sendEdit({ op: 'portal', portalId: u.portalId });
       showToast('Removed portal');
     } else {
@@ -617,6 +654,11 @@ export function App() {
       const tile = r.screenToTile(e.clientX - rect.left, e.clientY - rect.top);
       if (!tile) return;
       const m = modeRef.current;
+      // guests are read-only: no edit ops (server also rejects, this is UI gating)
+      if (!canEditRef.current && m !== 'play') {
+        showToast('Read-only — you are a guest here');
+        return;
+      }
       if (m === 'portal') {
         const portal: PortalPayload = {
           id: `p-${uuid().slice(0, 8)}`,
@@ -634,6 +676,18 @@ export function App() {
         } else {
           net.sendEdit({ op: 'paint', x: tile.x, y: tile.y, tileId: brushRef.current });
         }
+      } else if (m === 'objects') {
+        // server-validated functional object (door|npc|sign|light)
+        net.sendEdit({
+          op: 'object',
+          object: {
+            id: `obj-${uuid().slice(0, 8)}`,
+            kind: objectKindRef.current,
+            x: tile.x,
+            y: tile.y,
+          },
+        });
+        showToast(`${objectKindRef.current} placed — tap Undo to remove`);
       }
     },
     [showToast],
@@ -734,7 +788,7 @@ export function App() {
           onToggleMic={() => void voiceRef.current?.toggleMic()}
         />
       )}
-      {inWorld && (
+      {inWorld && canEdit && (
         <EditToolbar
           mode={mode}
           onMode={setMode}
@@ -748,9 +802,18 @@ export function App() {
           isPublished={isPublished}
           publishing={publishing}
           onPublish={publish}
+          onInvite={invite}
+          canEdit={canEdit}
           online={status === 'online'}
           mineCount={mineCount}
+          objectKind={objectKind}
+          onObjectKind={setObjectKind}
         />
+      )}
+      {inWorld && !canEdit && (
+        <div class="readonly-tag" role="status" title="This world is owned by someone else — you can explore but not edit">
+          👁 read-only — guest
+        </div>
       )}
 
       {/* paint-mode onboarding (one-time) */}

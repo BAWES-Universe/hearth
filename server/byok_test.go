@@ -44,7 +44,10 @@ func mockOpenRouter(t *testing.T, keyHandler, completionHandler http.HandlerFunc
 }
 
 func jsonDump(v any) string {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic("jsonDump: " + err.Error()) // a dump failure must fail the test, not silently pass
+	}
 	return string(b)
 }
 
@@ -77,6 +80,7 @@ func TestByokRequiresAuth(t *testing.T) {
 	}{
 		{"upsert", h.handleByok, http.MethodPost, "/api/byok", map[string]any{"key": testKey}},
 		{"status", h.handleByok, http.MethodGet, "/api/byok/status", nil},
+		{"contribution", h.handleByok, http.MethodGet, "/api/byok/contribution", nil},
 		{"delete", h.handleByok, http.MethodDelete, "/api/byok", nil},
 		{"use", h.byokUse, http.MethodPost, "/api/byok/use", map[string]any{"key": testKey, "prompt": "hi"}},
 	} {
@@ -243,11 +247,21 @@ func TestByokUseProxy(t *testing.T) {
 		t.Errorf("ai_usage rows = %d, want 1", n)
 	}
 
-	// invalid key through the proxy -> 400, nothing stored
+	// invalid key through the proxy -> 400, nothing stored (a wrong key is
+	// still format-valid, so it must reach the network and come back 401)
+	badKey := testKey + "x"
 	code, out = doJSON(t, h.byokUse, http.MethodPost, "/api/byok/use",
-		map[string]any{"key": "sk-or-v1-not-a-real-key-abcdef123456", "prompt": "hi", "feature": "soul"}, u)
+		map[string]any{"key": badKey, "prompt": "hi", "feature": "soul"}, u)
 	if code != http.StatusBadRequest || out["error"] != "invalid OpenRouter key" {
 		t.Errorf("use with bad key = %d %+v, want 400 invalid", code, out)
+	}
+	// the failed use must not have written an ai_usage row (nothing stored)
+	var badN int
+	if err := h.store.db.QueryRow(`SELECT COUNT(*) FROM ai_usage WHERE user_id = ? AND feature = 'soul'`, u.UserID).Scan(&badN); err != nil {
+		t.Fatalf("ai_usage count after bad key: %v", err)
+	}
+	if badN != 0 {
+		t.Errorf("ai_usage rows after bad key = %d, want 0 (nothing stored on rejection)", badN)
 	}
 }
 

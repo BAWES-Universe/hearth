@@ -48,6 +48,8 @@ export interface Welcome {
   world?: unknown;
   roster?: RosterEntry[];
   avatar?: AvatarInfo;
+  /** Server-arbitrated edit permission (owner/editor/showcase ⇒ true; guests false). */
+  canEdit?: boolean;
 }
 
 export interface StateEntry {
@@ -76,9 +78,21 @@ export interface EditMsg {
   priorTileId?: number;
   portalId?: string;
   portal?: PortalPayload;
+  objectId?: string;
+  object?: ObjectPayload;
   by?: string;
   seq?: number;
   applied?: boolean;
+}
+
+/** Functional object placed via the editor (door | npc | sign | light). */
+export interface ObjectPayload {
+  id?: string;
+  kind: string;
+  x: number;
+  y: number;
+  name?: string;
+  text?: string;
 }
 
 /** HMF v1 portal payload (mirrors server/hmf.Portal JSON). */
@@ -91,7 +105,7 @@ export interface PortalPayload {
   targetY: number;
 }
 
-/** Outbound editor op (frozen HMF v1 ops: paint|erase|place|zone|portal|publish). */
+/** Outbound editor op (frozen HMF v1 ops: paint|erase|place|zone|portal|object|publish). */
 export interface EditOut {
   op: string;
   x?: number;
@@ -99,6 +113,8 @@ export interface EditOut {
   tileId?: number;
   portal?: PortalPayload;
   portalId?: string;
+  object?: ObjectPayload;
+  objectId?: string;
 }
 
 /** Server ack for a portal walk-through: swap to spaceId at (x, y). */

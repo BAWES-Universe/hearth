@@ -45,6 +45,19 @@ type Spawn struct {
 	Y int `json:"y"`
 }
 
+// WorldObject is a functional object (door|npc|sign|light) placed in a world.
+// Persisted in world_entities; the client renders each kind as a marker with
+// tap interactions (npc/sign talk, door/light are visual).
+type WorldObject struct {
+	ID   string         `json:"id"`
+	Kind string         `json:"kind"`
+	X    int            `json:"x"`
+	Y    int            `json:"y"`
+	Name string         `json:"name,omitempty"`
+	Text string         `json:"text,omitempty"`
+	Data map[string]any `json:"data,omitempty"`
+}
+
 // ChunkInfo is one chunk's revision summary (HMF v1). Rev increments on every
 // op that touches the chunk; clients use it to detect missed deltas and
 // trigger refetch+replay (see docs/HMF-v1.md).
@@ -66,6 +79,7 @@ type World struct {
 	Tiles   map[string]*Tile `json:"-"`
 	Zones   []Zone           `json:"zones"`
 	Portals []Portal         `json:"portals"`
+	Objects []WorldObject    `json:"objects,omitempty"`
 	Spawn   Spawn            `json:"spawn"`
 
 	// HMF v1 metadata.
@@ -234,6 +248,44 @@ func (w *World) FindPortal(id string) *Portal {
 	return nil
 }
 
+// FindObject returns the object with the given id (nil when absent).
+func (w *World) FindObject(id string) *WorldObject {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	for i := range w.Objects {
+		if w.Objects[i].ID == id {
+			o := w.Objects[i]
+			return &o
+		}
+	}
+	return nil
+}
+
+// UpsertObject adds or replaces an object in RAM (persisted by the store).
+func (w *World) UpsertObject(o WorldObject) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i := range w.Objects {
+		if w.Objects[i].ID == o.ID {
+			w.Objects[i] = o
+			return
+		}
+	}
+	w.Objects = append(w.Objects, o)
+}
+
+// DeleteObject removes an object from RAM by id (no-op when absent).
+func (w *World) DeleteObject(id string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for i := range w.Objects {
+		if w.Objects[i].ID == id {
+			w.Objects = append(w.Objects[:i], w.Objects[i+1:]...)
+			return
+		}
+	}
+}
+
 // --- HMF v1 chunk revisions ---
 
 func chunkKey(cx, cy int) string { return fmt.Sprintf("%d,%d", cx, cy) }
@@ -302,6 +354,7 @@ func (w *World) GeoJSON() map[string]any {
 		"tiles":       w.TileListLocked(),
 		"zones":       w.Zones,
 		"portals":     w.Portals,
+		"objects":     w.Objects,
 		"spawn":       w.Spawn,
 		"hmf":         hmfVersion,
 		"isPublished": w.IsPublished,

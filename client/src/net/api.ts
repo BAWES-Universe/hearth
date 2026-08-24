@@ -44,23 +44,96 @@ export async function listWorlds(q = '', base = ''): Promise<WorldEntry[]> {
   }
 }
 
-/** POST /api/worlds — blank-canvas draft owned by the device-key user. */
+/** POST /api/worlds — template-seeded draft owned by the device-key user.
+ *  Templates: empty_lot (default, no walls) | cozy_room | plaza. */
 export async function createWorld(
   name: string,
   deviceKey: string,
-  opts: { width?: number; height?: number; base?: string } = {},
-): Promise<{ id: string; name: string } | null> {
+  opts: { width?: number; height?: number; template?: string; handle?: string; base?: string } = {},
+): Promise<{ id: string; name: string; template?: string; spawn?: { x: number; y: number } } | null> {
   const { width = 24, height = 24, base = '' } = opts;
   try {
     const r = await fetch(`${base}/api/worlds?deviceKey=${encodeURIComponent(deviceKey)}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ name: name.trim().slice(0, 40) || 'My World', width, height }),
+      body: JSON.stringify({
+        name: name.trim().slice(0, 40) || 'My World',
+        width,
+        height,
+        template: opts.template && opts.template !== 'empty_lot' ? opts.template : undefined,
+        handle: opts.handle?.trim() || undefined,
+      }),
     });
     if (!r.ok) return null;
-    const body = (await r.json()) as { ok?: boolean; id?: string; name?: string };
+    const body = (await r.json()) as { ok?: boolean; id?: string; name?: string; template?: string; spawn?: { x: number; y: number } };
     if (!body?.ok || !body.id) return null;
-    return { id: body.id, name: body.name ?? name };
+    return { id: body.id, name: body.name ?? name, template: body.template, spawn: body.spawn };
+  } catch {
+    return null;
+  }
+}
+
+/** One world in the session user's dashboard (/api/me, /api/worlds/mine). */
+export interface MyWorld {
+  id: string;
+  name: string;
+  role: 'owner' | 'editor';
+  is_showcase?: boolean;
+  is_published?: boolean;
+  created_at?: string;
+}
+
+/** GET /api/worlds/mine — worlds the session user owns or edits. */
+export async function myWorlds(): Promise<MyWorld[]> {
+  try {
+    const r = await fetch('/api/worlds/mine', { headers: { Accept: 'application/json' } });
+    if (!r.ok) return [];
+    const body = (await r.json()) as { worlds?: MyWorld[] };
+    return Array.isArray(body?.worlds) ? body.worlds : [];
+  } catch {
+    return [];
+  }
+}
+
+/** POST /api/worlds/{id}/invite — mint a single-use editor invite (owner/editor). */
+export async function createInvite(id: string): Promise<string | null> {
+  try {
+    const r = await fetch(`/api/worlds/${encodeURIComponent(id)}/invite`, {
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+    });
+    if (!r.ok) return null;
+    const body = (await r.json()) as { ok?: boolean; token?: string; url?: string };
+    if (!body?.ok || !body.token) return null;
+    return body.url ?? body.token;
+  } catch {
+    return null;
+  }
+}
+
+/** GET /api/worlds/join?invite=<token> — redeem an invite, granting editor role. */
+export async function joinInvite(token: string): Promise<{ worldId: string; name: string } | null> {
+  try {
+    const r = await fetch(`/api/worlds/join?invite=${encodeURIComponent(token)}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!r.ok) return null;
+    const body = (await r.json()) as { ok?: boolean; worldId?: string; name?: string };
+    if (!body?.ok || !body.worldId) return null;
+    return { worldId: body.worldId, name: body.name ?? '' };
+  } catch {
+    return null;
+  }
+}
+
+/** GET /api/me — session identity + the user's worlds. */
+export async function fetchMe(): Promise<{ userId: string; name: string; worlds: MyWorld[] } | null> {
+  try {
+    const r = await fetch('/api/me', { headers: { Accept: 'application/json' } });
+    if (!r.ok) return null;
+    const body = (await r.json()) as { ok?: boolean; userId?: string; name?: string; worlds?: MyWorld[] };
+    if (!body?.ok) return null;
+    return { userId: body.userId ?? '', name: body.name ?? '', worlds: Array.isArray(body.worlds) ? body.worlds : [] };
   } catch {
     return null;
   }

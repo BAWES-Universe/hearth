@@ -79,6 +79,8 @@ func main() {
 	mux.HandleFunc("/api/spaces/", hub.handleSpaceGet)
 	mux.HandleFunc("/api/worlds", hub.handleWorlds)
 	mux.HandleFunc("/api/worlds/", hub.handleWorldRoute)
+	mux.HandleFunc("/api/worlds/join", hub.joinWorld) // exact beats the /api/worlds/ prefix
+	mux.HandleFunc("/api/worlds/mine", hub.myWorlds)
 	mux.HandleFunc("/api/bots", hub.handleBots)
 	mux.HandleFunc("/api/bots/", hub.handleBotStatus)
 	mux.HandleFunc("/api/friends", hub.handleFriends)
@@ -93,6 +95,8 @@ func main() {
 	mux.HandleFunc("/api/byok/status", hub.handleByok)   // GET key presence
 	mux.HandleFunc("/api/byok/contribution", hub.handleByok) // GET per-key impact
 	mux.HandleFunc("/api/byok/use", hub.byokUse)         // POST agent-integration proxy (in-memory key)
+	// T2 avatars: upload / list / sets / scopes / grants (avatars_t2.go).
+	mux.HandleFunc("/api/avatars/", hub.handleAvatars)
 	mux.HandleFunc("/ws", hub.handleWS)
 	hub.RegisterAdminRoutes(mux) // S9: /api/admin/* + embedded /admin console
 	// T2: Model Context Protocol — streamable HTTP JSON-RPC endpoint for AI

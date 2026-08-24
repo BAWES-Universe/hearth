@@ -1176,6 +1176,71 @@ body {
   justify-content: flex-end;
 }
 
+/* template picker in the New World modal (world-ownership stream) */
+.template-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.template-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 10px 6px;
+  color: var(--muted);
+  background: #171126;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+
+.template-card:hover {
+  border-color: var(--purple);
+}
+
+.template-card.active {
+  color: var(--text);
+  border-color: var(--purple);
+  background: rgba(139, 92, 246, 0.14);
+}
+
+.template-icon {
+  font-size: 22px;
+}
+
+.template-label {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.template-desc {
+  font-size: 10px;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--muted);
+}
+
+/* read-only guest tag (canEdit gating — replaces the editor toolbar) */
+.readonly-tag {
+  position: absolute;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 999px;
+  backdrop-filter: blur(10px);
+  pointer-events: none;
+}
+
 /* ------------------------------------------------------------ paint-mode UX */
 
 /* ownership counter + how-it-works line under the palette */

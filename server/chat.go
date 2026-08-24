@@ -301,24 +301,32 @@ func (c *Client) handleEdit(msg map[string]any) {
 	log.Printf("edit[%s] %s by=%s: op=%s seq=%d cells=%d", sp.World.ID, c.Entity.Name, op.By, op.Op, op.Seq, len(ack.Cells))
 }
 
-// canEditSpace authorizes a WS edit op. The client must be the world owner;
-// showcase/seed worlds are the shared co-building hub (plan v2) and are
+// canEditWorld authorizes an account on a world: owners and invited editors
+// edit; showcase/seed worlds are the shared co-building hub (plan v2) and are
 // editable by any authenticated session — humans and bots co-author them
-// (bots additionally audited + idempotent, docs/BOT-PROTOCOL.md); an
-// ownerless non-showcase world is not client-editable either. Denies on any
-// lookup error (authz gates fail closed).
-func (c *Client) canEditSpace(w *World) bool {
+// (bots additionally audited + idempotent, docs/BOT-PROTOCOL.md); guests
+// (no session) are view-only. Denies on any lookup error (authz gates fail
+// closed).
+func (h *Hub) canEditWorld(sess *Session, w *World) bool {
 	if w.IsShowcase {
-		return c.Session != nil
+		return sess != nil
 	}
-	meta, err := c.hub.store.worldMeta(w.ID)
+	if sess == nil {
+		return false
+	}
+	meta, err := h.store.worldMeta(w.ID)
 	if err != nil {
 		return false
 	}
-	if meta.OwnerID == "" {
-		return false
+	if meta.OwnerID == sess.UserID {
+		return true
 	}
-	return c.Session != nil && meta.OwnerID == c.Session.UserID
+	ok, err := h.store.IsEditor(w.ID, sess.UserID)
+	return err == nil && ok
+}
+
+func (c *Client) canEditSpace(w *World) bool {
+	return c.hub.canEditWorld(c.Session, w)
 }
 
 // parseEditOp builds an hmf.Op from a client edit message. Accepts the frozen
@@ -417,6 +425,34 @@ func parseEditOp(msg map[string]any) *hmf.Op {
 		}
 	case "publish":
 		// no payload
+	case "object":
+		// functional object placement (door|npc|sign|light): upsert with a
+		// payload, remove with objectId only.
+		if o, ok := msg["object"].(map[string]any); ok {
+			if !intFieldsPresent(payload(msg, "object"), "x", "y") {
+				return nil
+			}
+			kind := getString(o, "kind")
+			if !hmf.ValidObjectKind(kind) {
+				return nil
+			}
+			op.Object = &hmf.Object{
+				ID:   getString(o, "id"),
+				Kind: kind,
+				X:    mustInt(o, "x"),
+				Y:    mustInt(o, "y"),
+				Name: getString(o, "name"),
+				Text: getString(o, "text"),
+			}
+			if d, ok := o["data"].(map[string]any); ok {
+				op.Object.Data = d
+			}
+		} else {
+			op.ObjectID = getString(msg, "objectId")
+		}
+		if op.Object == nil && op.ObjectID == "" {
+			return nil
+		}
 	case "chunk_get":
 		// cx/cy already read
 	default:
@@ -515,6 +551,12 @@ func (c *Client) broadcastEditAck(sp *SpaceState, ack *EditAck) {
 			d["zone"] = op.Zone
 		} else {
 			d["zoneId"] = op.ZoneID
+		}
+	case "object":
+		if op.Object != nil {
+			d["object"] = op.Object
+		} else {
+			d["objectId"] = op.ObjectID
 		}
 	case "publish":
 		d["isPublished"] = true

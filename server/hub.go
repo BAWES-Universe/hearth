@@ -327,6 +327,7 @@ type Hub struct {
 	// so a reconnect resend (or a retry) of the same nonce within the 30s
 	// TTL cannot double-broadcast or double-insert. Pruned lazily on access.
 	recentNonces map[string]map[string]time.Time
+	avatarReg    *AvatarRegistry   // T2 avatar governance snapshot (avatars_t2.go)
 }
 
 func NewHub(store *Store) *Hub {
@@ -341,6 +342,7 @@ func NewHub(store *Store) *Hub {
 		sfu:        newMediaSFU(),
 		bubbles:    map[string]string{},
 		recentNonces: map[string]map[string]time.Time{},
+		avatarReg:  newAvatarRegistry(),
 	}
 	for _, w := range store.ListWorlds() {
 		h.spaces[w.ID] = NewSpaceState(w)
