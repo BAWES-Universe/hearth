@@ -24,11 +24,11 @@ import (
 )
 
 // tinyPNG is a valid 1x1 transparent PNG (stdlib-decodable).
-const tinyPNG = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xcf\xc0P\x0f\x00\x04\x85\x01\x80\x84\xa9\x8c!\x00\x00\x00\x00IEND\xaeB`\x82"
+const tinyPNGEditor = "\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\rIDATx\x9cc\xf8\xcf\xc0P\x0f\x00\x04\x85\x01\x80\x84\xa9\x8c!\x00\x00\x00\x00IEND\xaeB`\x82"
 
-// uploadAsset posts a multipart image to /api/worlds/{id}/assets and returns
+// uploadWorldAsset posts a multipart image to /api/worlds/{id}/assets and returns
 // the parsed asset record.
-func uploadAsset(t *testing.T, h *Hub, worldID string, sess *Session, name string, data []byte) map[string]any {
+func uploadWorldAsset(t *testing.T, h *Hub, worldID string, sess *Session, name string, data []byte) map[string]any {
 	t.Helper()
 	var buf bytes.Buffer
 	mw := multipart.NewWriter(&buf)
@@ -246,7 +246,7 @@ func TestAssetUploadPlaceBroadcastRemove(t *testing.T) {
 	worldID, _ := out["id"].(string)
 
 	// upload (owner session)
-	asset := uploadAsset(t, h, worldID, sess, "logo", []byte(tinyPNG))
+	asset := uploadWorldAsset(t, h, worldID, sess, "logo", []byte(tinyPNGEditor))
 	assetID, _ := asset["id"].(string)
 	url, _ := asset["url"].(string)
 	if assetID == "" || url == "" {
@@ -263,7 +263,7 @@ func TestAssetUploadPlaceBroadcastRemove(t *testing.T) {
 	if ct := rr.Header().Get("Content-Type"); ct != "image/png" {
 		t.Fatalf("asset content-type = %q, want image/png", ct)
 	}
-	if !bytes.Equal(rr.Body.Bytes(), []byte(tinyPNG)) {
+	if !bytes.Equal(rr.Body.Bytes(), []byte(tinyPNGEditor)) {
 		t.Fatal("asset bytes mismatch")
 	}
 
