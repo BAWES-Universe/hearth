@@ -60,13 +60,17 @@ body {
   inset: 0;
   z-index: 20;
   display: flex;
-  align-items: center;
-  justify-content: center;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
   background: radial-gradient(120% 90% at 50% 0%, #1c1230 0%, #0d0a12 62%);
   padding: 24px;
 }
 
+/* margin:auto centers the card when it fits and keeps the top reachable
+   (scrollable) when the avatar builder is taller than the viewport. */
 .join-card {
+  margin: auto;
   width: 100%;
   max-width: 340px;
   background: var(--panel);
@@ -1160,12 +1164,10 @@ body {
   .join {
     align-items: flex-start;
     justify-content: flex-start;
-    overflow-y: auto;
-    overflow-x: hidden;
-    -webkit-overflow-scrolling: touch;
     padding: 20px 16px calc(24px + var(--safe-b));
   }
   .join-card {
+    margin: 0 auto;
     max-width: 100%;
     padding: 24px 18px 20px;
   }
