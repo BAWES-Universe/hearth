@@ -1022,6 +1022,14 @@ body {
   overflow: hidden;
 }
 
+.world-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  image-rendering: pixelated;
+}
+
 .world-thumb-letter {
   font-size: 34px;
   font-weight: 900;

@@ -33,9 +33,17 @@ const (
 )
 
 // contributionKinds are the activity kinds that count toward Love
-// (sum of contributions, per-day capped).
+// (sum of contributions, per-day capped). T2 (directory gravity) wires the
+// full live-event set so Love genuinely reflects engagement quality:
+//   edit     — world edits (human + bot)
+//   chat     — chat messages
+//   presence — joins (returning visitors: repeat visits add Love, capped)
+//   nav      — portal hops (emitted kind for portal traversal)
+//   world    — world create/publish (emitted kind for those actions)
+// The S1 kinds (portal/publish/create) are kept for legacy rows.
 var contributionKinds = map[string]bool{
-	"edit": true, "chat": true, "portal": true, "publish": true, "create": true,
+	"edit": true, "chat": true, "presence": true, "nav": true, "world": true,
+	"portal": true, "publish": true, "create": true,
 }
 
 // ActivityEvent is one append-only row in activity_events.
@@ -55,6 +63,25 @@ type ActivityEvent struct {
 // GravityScore is one persisted row in gravity_scores.
 type GravityScore struct {
 	WorldID    string  `json:"worldId"`
+	Love       float64 `json:"love"`
+	Reach      float64 `json:"reach"`
+	Momentum   float64 `json:"momentum"`
+	Gravity    float64 `json:"gravity"`
+	ComputedAt string  `json:"computedAt"`
+}
+
+// MemberGravityScore is one persisted row in member_gravity_scores — the
+// per-member variant of the same Love x Reach x Momentum formula (T2
+// directory gravity). Member gravity uses the member's OWN activity rows:
+//
+//	Love     = sum of capped daily contributions (same per-day cap as worlds)
+//	Reach    = number of distinct worlds the member visited (their footprint)
+//	Momentum = decayed recency of their events (14-day half-life)
+//	Gravity  = (1+Love) * (1+Reach) * (1+Momentum)
+//
+// Deterministic for identical input, same as the world scores.
+type MemberGravityScore struct {
+	MemberID   string  `json:"memberId"`
 	Love       float64 `json:"love"`
 	Reach      float64 `json:"reach"`
 	Momentum   float64 `json:"momentum"`
@@ -82,6 +109,16 @@ func (s *Store) MigrateS1() error {
 		`CREATE INDEX IF NOT EXISTS idx_activity_world_ts ON activity_events(world_id, ts)`,
 		`CREATE TABLE IF NOT EXISTS gravity_scores (
 			world_id TEXT PRIMARY KEY,
+			love REAL NOT NULL DEFAULT 0,
+			reach REAL NOT NULL DEFAULT 0,
+			momentum REAL NOT NULL DEFAULT 0,
+			gravity REAL NOT NULL DEFAULT 0,
+			computed_at TEXT NOT NULL
+		)`,
+		// T2 directory gravity: per-member scores (same Love×Reach×Momentum
+		// formula, computed from the member's own activity rows).
+		`CREATE TABLE IF NOT EXISTS member_gravity_scores (
+			member_id TEXT PRIMARY KEY,
 			love REAL NOT NULL DEFAULT 0,
 			reach REAL NOT NULL DEFAULT 0,
 			momentum REAL NOT NULL DEFAULT 0,
@@ -397,7 +434,83 @@ func (s *Store) RecomputeGravity() error {
 			return err
 		}
 	}
+	// Per-member gravity (T2): same snapshot, grouped by actor. Members with
+	// no activity get no row (unlike worlds, which are all listed) — the
+	// member table only materializes members who actually did something.
+	byMember := map[string][]activityRow{}
+	for _, r := range rows {
+		if r.Actor == "" {
+			continue
+		}
+		byMember[r.Actor] = append(byMember[r.Actor], r)
+	}
+	for memberID, mrows := range byMember {
+		love, reach, momentum, gravity := computeMemberGravityFor(mrows, now)
+		if _, err := s.db.Exec(`INSERT INTO member_gravity_scores (member_id, love, reach, momentum, gravity, computed_at)
+			VALUES (?,?,?,?,?,?)
+			ON CONFLICT(member_id) DO UPDATE SET love=excluded.love, reach=excluded.reach,
+				momentum=excluded.momentum, gravity=excluded.gravity, computed_at=excluded.computed_at`,
+			memberID, love, reach, momentum, gravity, now.Format(time.RFC3339)); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// computeMemberGravityFor returns (love, reach, momentum, gravity) for one
+// member from their own activity rows.
+//
+//	Love     = sum of contributions, per-day capped per member (same
+//	           gravityPerDayCap as worlds)
+//	Reach    = distinct worlds the member visited in the lookback window
+//	           (join events, unique world_id) — their audience footprint
+//	Momentum = recency: sum of 2^(-ageDays/14) over their events
+//	Gravity  = (1+Love) * (1+Reach) * (1+Momentum)
+func computeMemberGravityFor(rows []activityRow, now time.Time) (love, reach, momentum, gravity float64) {
+	perDay := map[string]int{}
+	worlds := map[string]bool{}
+	for _, r := range rows {
+		if contributionKinds[r.Kind] {
+			key := r.Actor + "|" + r.TS.UTC().Format("2006-01-02")
+			perDay[key]++
+		}
+		if r.Kind == "presence" && r.Action == "join" && r.WorldID != "" {
+			worlds[r.WorldID] = true
+		}
+		age := now.Sub(r.TS).Hours() / 24.0
+		if age < 0 {
+			age = 0
+		}
+		if age <= gravityLookbackDays {
+			momentum += pow2(-age / gravityHalfLifeDays)
+		}
+	}
+	for _, n := range perDay {
+		if n > gravityPerDayCap {
+			n = gravityPerDayCap
+		}
+		love += float64(n)
+	}
+	reach = float64(len(worlds))
+	gravity = (1 + love) * (1 + reach) * (1 + momentum)
+	return love, reach, momentum, gravity
+}
+
+// MemberGravityFor returns the persisted score for one member (zeros if
+// the member has no activity yet).
+func (s *Store) MemberGravityFor(id string) MemberGravityScore {
+	var g MemberGravityScore
+	var computedAt sql.NullString
+	err := s.db.QueryRow(`SELECT member_id, love, reach, momentum, gravity, computed_at
+		FROM member_gravity_scores WHERE member_id = ?`, id).
+		Scan(&g.MemberID, &g.Love, &g.Reach, &g.Momentum, &g.Gravity, &computedAt)
+	if err != nil {
+		return MemberGravityScore{MemberID: id}
+	}
+	if computedAt.Valid {
+		g.ComputedAt = computedAt.String
+	}
+	return g
 }
 
 // GravityScoreFor returns the persisted score for one world (zeros if absent).

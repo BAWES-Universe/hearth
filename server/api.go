@@ -52,6 +52,28 @@ func (h *Hub) handleWorlds(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleRecomputeGravity: POST /api/worlds/recompute — force a full gravity
+// pass now (authenticated, additive route; the nightly cron + the 5-min
+// ensureGravityFresh TTL already keep the directory fresh without it). The
+// live stream test (gravity-test.cjs) uses it to make ranking assertions
+// deterministic instead of waiting for the next cron tick.
+func (h *Hub) handleRecomputeGravity(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if h.sessionFromRequest(r) == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "not authenticated"})
+		return
+	}
+	if err := h.store.RecomputeGravity(); err != nil {
+		log.Printf("manual gravity recompute: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "computedAt": h.store.lastGravityCompute()})
+}
+
 // handleWorldRoute: /api/worlds/{id}, /api/worlds/{id}/publish,
 // /api/worlds/{id}/invite, /api/worlds/{id}/activity (read-only
 // activity/audit feed for a world).
@@ -84,6 +106,14 @@ func (h *Hub) handleWorldRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.worldActivity(w, r, strings.TrimSuffix(id, "/activity"))
+		return
+	}
+	if strings.HasSuffix(id, "/thumbnail") {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.handleWorldThumbnail(w, r, strings.TrimSuffix(id, "/thumbnail"))
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -483,7 +513,7 @@ func (h *Hub) directory(q string) ([]map[string]any, error) {
 			"owner":         map[string]any{"id": meta.OwnerID, "name": h.store.userDisplay(meta.OwnerID)},
 			"headcount":     headcount,
 			"gravity":       map[string]any{"love": score.Love, "reach": score.Reach, "momentum": score.Momentum, "gravity": score.Gravity},
-			"thumbnail":     nil, // S2 renders from HMF v1; placeholder for now
+			"thumbnail":     "/api/worlds/" + e.id + "/thumbnail", // server-rendered HMF v1 preview (T2)
 		})
 	}
 	return out, nil
