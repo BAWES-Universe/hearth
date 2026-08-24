@@ -94,6 +94,9 @@ func main() {
 	mux.HandleFunc("/api/byok/use", hub.byokUse)         // POST agent-integration proxy (in-memory key)
 	// T2 avatars: upload / list / sets / scopes / grants (avatars_t2.go).
 	mux.HandleFunc("/api/avatars/", hub.handleAvatars)
+	// Analytics v0: scrubbed event intake + admin-gated daily pulse (analytics.go).
+	mux.HandleFunc("/api/events", hub.handleAnalyticsEvents)
+	mux.HandleFunc("/api/analytics/pulse", hub.adminGate(hub.handleAnalyticsPulse))
 	mux.HandleFunc("/ws", hub.handleWS)
 	hub.RegisterAdminRoutes(mux) // S9: /api/admin/* + embedded /admin console
 	// T2: Model Context Protocol — streamable HTTP JSON-RPC endpoint for AI
@@ -104,7 +107,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           logRequests(mux),
+		Handler:           recoverPanic(logRequests(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

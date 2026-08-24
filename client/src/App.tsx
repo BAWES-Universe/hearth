@@ -17,6 +17,7 @@ import {
 } from './net/friends';
 import { resolveSpaceId, wsUrl } from './net/config';
 import { Net, type NetStatus } from './net/ws';
+import { track } from './analytics/analytics';
 import { WorldRenderer } from './world/renderer';
 import { uuid, type EditMsg, type FriendMsg, type FriendPresenceMsg, type PortalMsg, type PortalPayload } from './net/protocol';
 import { ChatSheet, type ChatMessage } from './ui/ChatSheet';
@@ -368,6 +369,7 @@ export function App() {
     async (d: PortalMsg) => {
       const target = d.spaceId;
       if (!target || target === lastSpaceRef.current) return;
+      const from = lastSpaceRef.current;
       lastSpaceRef.current = target;
       setTeleporting(true);
       try {
@@ -385,6 +387,9 @@ export function App() {
         r?.setSelf(selfIdRef.current, selfNameRef.current || 'you', { spec: specRef.current });
         if (typeof d.x === 'number' && typeof d.y === 'number') r?.setLocalPos(d.x, d.y);
         setSpaceName(target);
+        // analytics: portal transit = leave old space, enter new one
+        if (from) track('world_leave', { space: from });
+        track('world_enter', { space: target, via: 'portal' });
         // move the voice bubble to the new space (server re-joins the room)
         voiceRef.current?.enter(target);
         // keep the URL as the world's deep link (no reload)
@@ -404,7 +409,7 @@ export function App() {
   );
 
   const joinInto = useCallback(
-    (space: string) => {
+    (space: string, via: 'join' | 'directory' | 'portal' | 'deep-link' = 'join') => {
       const name = selfNameRef.current || 'guest';
       const spec = specRef.current;
       lastSpaceRef.current = space;
@@ -431,6 +436,7 @@ export function App() {
             lastSpaceRef.current = sp;
             setSpaceName(sp);
             voiceRef.current?.enter(sp);
+            track('world_enter', { space: sp, via });
           }
           setPhase('world');
           setMode('play');
@@ -535,7 +541,8 @@ export function App() {
       setPhase('loading');
       void (async () => {
         const space = await resolveSpaceId();
-        joinInto(space);
+        const deep = new URLSearchParams(window.location.search).has('space') ? 'deep-link' : 'join';
+        joinInto(space, deep);
       })();
     },
     [joinInto],
@@ -553,7 +560,7 @@ export function App() {
       selfNameRef.current = name;
       specRef.current = spec;
       setPhase('world');
-      joinInto(id);
+      joinInto(id, 'directory');
       window.setTimeout(() => setTeleporting(false), 500);
     },
     [joinInto],
@@ -570,6 +577,13 @@ export function App() {
   useEffect(() => {
     if (view === 'worlds') void refreshWorlds(worldsQueryRef.current);
   }, [view, refreshWorlds]);
+
+  // analytics: page_view on view switches (world vs worlds directory)
+  useEffect(() => {
+    if (view === 'worlds') track('page_view', { view: 'worlds' });
+    else track('page_view', { view: 'world', space: lastSpaceRef.current || spaceName });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on view change only
+  }, [view]);
 
   const onSearch = useCallback((q: string) => {
     worldsQueryRef.current = q;
@@ -746,6 +760,8 @@ export function App() {
         },
       ]);
       netRef.current?.sendChat(channel, text, nonce);
+      // analytics: chat_send carries channel + char_len ONLY — never text
+      track('chat_send', { channel, char_len: text.length });
     },
     [channel],
   );
