@@ -53,7 +53,8 @@ func (h *Hub) handleWorlds(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleWorldRoute: /api/worlds/{id}, /api/worlds/{id}/publish,
-// /api/worlds/{id}/activity (read-only audit/activity feed for a world).
+// /api/worlds/{id}/invite, /api/worlds/{id}/activity (read-only
+// activity/audit feed for a world).
 func (h *Hub) handleWorldRoute(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/api/worlds/")
 	id = strings.TrimSuffix(id, "/")
@@ -67,6 +68,14 @@ func (h *Hub) handleWorldRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.publishWorld(w, r, strings.TrimSuffix(id, "/publish"))
+		return
+	}
+	if strings.HasSuffix(id, "/invite") {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.inviteWorld(w, r, strings.TrimSuffix(id, "/invite"))
 		return
 	}
 	if strings.HasSuffix(id, "/activity") {
@@ -109,8 +118,10 @@ func (h *Hub) worldActivity(w http.ResponseWriter, r *http.Request, id string) {
 // parseInt was a hand-rolled digit parser, replaced by strconv.Atoi (which
 // also catches overflow). Deleted — all call sites use strconv directly.
 
-// createWorld: POST /api/worlds — blank canvas draft owned by the session user.
-// <60s "My world" flow: create -> (S3 editor paints) -> publish.
+// createWorld: POST /api/worlds — template-seeded draft owned by the session
+// user. <60s flow: create (empty_lot | cozy_room | plaza) -> paint -> publish.
+// The deviceKey identity is upgraded to a persisted account here: the chosen
+// handle (if any) is stored as the account name.
 func (h *Hub) createWorld(w http.ResponseWriter, r *http.Request) {
 	sess := h.sessionFromRequest(r)
 	if sess == nil {
@@ -118,13 +129,19 @@ func (h *Hub) createWorld(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name   string `json:"name"`
-		Width  int    `json:"width"`
-		Height int    `json:"height"`
+		Name     string `json:"name"`
+		Width    int    `json:"width"`
+		Height   int    `json:"height"`
+		Template string `json:"template"`
+		Handle   string `json:"handle"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 16<<10) // 16KB: name + dimensions only
+	r.Body = http.MaxBytesReader(w, r.Body, 16<<10) // 16KB: name + dimensions + template
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "bad JSON"})
+		return
+	}
+	if !validWorldTemplate(body.Template) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "unknown template — use empty_lot, cozy_room or plaza"})
 		return
 	}
 	world, err := h.store.CreateSpace(body.Name, body.Width, body.Height)
@@ -132,8 +149,24 @@ func (h *Hub) createWorld(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
 		return
 	}
+	if err := applyWorldTemplate(world, body.Template); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if body.Template != "" {
+		if err := h.store.SaveWorld(world); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
+			return
+		}
+	}
 	if err := h.store.setOwner(world.ID, sess.UserID); err != nil {
 		log.Printf("world create: set owner: %v", err)
+	}
+	// deviceKey -> persisted account: capture the handle chosen at creation
+	if body.Handle != "" {
+		if err := h.store.SetUserName(sess.UserID, body.Handle); err != nil {
+			log.Printf("world create: set handle: %v", err)
+		}
 	}
 	// register in the live hub so the draft is immediately joinable/editable
 	h.mu.Lock()
@@ -141,16 +174,123 @@ func (h *Hub) createWorld(w http.ResponseWriter, r *http.Request) {
 	h.mu.Unlock()
 
 	h.emitActivity(world.ID, sess.UserID, "member", "world", "create", world.ID,
-		diffJSON(map[string]any{"name": world.Name, "width": world.Width, "height": world.Height}),
+		diffJSON(map[string]any{"name": world.Name, "width": world.Width, "height": world.Height, "template": body.Template}),
 		sanitizeIP(r.RemoteAddr))
 
 	meta, _ := h.store.worldMeta(world.ID)
+	tpl := body.Template
+	if tpl == "" {
+		tpl = tplEmptyLot
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"ok": true, "id": world.ID, "name": world.Name,
 		"width": world.Width, "height": world.Height,
+		"template": tpl, "spawn": map[string]any{"x": world.Spawn.X, "y": world.Spawn.Y},
 		"is_published": meta.IsPublished, "is_showcase": meta.IsShowcase,
 		"owner": map[string]any{"id": sess.UserID, "name": h.store.userDisplay(sess.UserID)},
 	})
+}
+
+// worldRole resolves the caller's role on a world: "owner" | "editor" |
+// "viewer" ("" when the world is unknown). Owners + editors edit; viewers
+// and guests are read-only.
+func (h *Hub) worldRole(userID, worldID string) string {
+	meta, err := h.store.worldMeta(worldID)
+	if err != nil {
+		return ""
+	}
+	if meta.OwnerID == userID {
+		return "owner"
+	}
+	if ok, err := h.store.IsEditor(worldID, userID); err == nil && ok {
+		return "editor"
+	}
+	return "viewer"
+}
+
+// inviteWorld: POST /api/worlds/{id}/invite — owner or editor mints a
+// single-use invite token. Redemption (GET /api/worlds/join) grants the
+// editor role.
+func (h *Hub) inviteWorld(w http.ResponseWriter, r *http.Request, id string) {
+	sess := h.sessionFromRequest(r)
+	if sess == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "not authenticated"})
+		return
+	}
+	if _, err := h.store.worldMeta(id); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "world not found"})
+		return
+	}
+	role := h.worldRole(sess.UserID, id)
+	if role != "owner" && role != "editor" {
+		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "only the owner or an editor can invite"})
+		return
+	}
+	token, err := h.store.CreateInvite(id, sess.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
+		return
+	}
+	h.emitActivity(id, sess.UserID, "member", "world", "invite", id,
+		diffJSON(map[string]any{"token": token}), sanitizeIP(r.RemoteAddr))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "token": token, "worldId": id, "url": "/?invite=" + token,
+	})
+}
+
+// joinWorld: GET /api/worlds/join?invite=<token> — redeems a single-use
+// invite and grants the caller the editor role on the target world. Requires
+// an authenticated session (the app joins a world over WS first, which sets
+// the httpOnly cookie).
+func (h *Hub) joinWorld(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sess := h.sessionFromRequest(r)
+	if sess == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "log in first — open the app once, then retry the invite link"})
+		return
+	}
+	token := strings.TrimSpace(r.URL.Query().Get("invite"))
+	if token == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"ok": false, "error": "missing invite token"})
+		return
+	}
+	worldID, err := h.store.ConsumeInvite(token)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "invite not found or already used"})
+		return
+	}
+	if err := h.store.GrantEditor(worldID, sess.UserID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
+		return
+	}
+	meta, _ := h.store.worldMeta(worldID)
+	h.emitActivity(worldID, sess.UserID, "member", "world", "invite_join", worldID,
+		diffJSON(map[string]any{"role": "editor"}), sanitizeIP(r.RemoteAddr))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "worldId": worldID, "name": meta.Name, "role": "editor",
+	})
+}
+
+// myWorlds: GET /api/worlds/mine — worlds the session user owns or edits.
+func (h *Hub) myWorlds(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	sess := h.sessionFromRequest(r)
+	if sess == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "not authenticated"})
+		return
+	}
+	list, err := h.store.ListMyWorlds(sess.UserID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"ok": false, "error": "db error"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "worlds": list})
 }
 
 // publishWorld: POST /api/worlds/{id}/publish — draft -> published.
@@ -169,9 +309,12 @@ func (h *Hub) publishWorld(w http.ResponseWriter, r *http.Request, id string) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "world not found"})
 		return
 	}
-	if meta.OwnerID != "" && meta.OwnerID != sess.UserID {
-		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "only the owner can publish this world"})
-		return
+	if meta.OwnerID != "" {
+		role := h.worldRole(sess.UserID, id)
+		if role != "owner" && role != "editor" {
+			writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "only the owner or an editor can publish this world"})
+			return
+		}
 	}
 	if meta.OwnerID == "" && !meta.IsShowcase {
 		writeJSON(w, http.StatusForbidden, map[string]any{"ok": false, "error": "only the owner can publish this world"})
@@ -195,20 +338,28 @@ func (h *Hub) publishWorld(w http.ResponseWriter, r *http.Request, id string) {
 	})
 }
 
-// getWorld: GET /api/worlds/{id} — world meta + flags + gravity + headcount.
-// Drafts are visible only to their owner (directory only shows published).
+// getWorld: GET /api/worlds/{id} — world meta + flags + gravity + headcount
+// + the caller's role. Drafts are visible only to their owner or an editor
+// (the directory only shows published).
 func (h *Hub) getWorld(w http.ResponseWriter, r *http.Request, id string) {
 	meta, err := h.store.worldMeta(id)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "world not found"})
 		return
 	}
-	if !meta.IsPublished {
-		sess := h.sessionFromRequest(r)
-		if sess == nil || meta.OwnerID != sess.UserID {
-			writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "world not found"})
-			return
+	role := "viewer"
+	var editorIDs []string
+	if sess := h.sessionFromRequest(r); sess != nil {
+		role = h.worldRole(sess.UserID, id)
+		if role == "owner" {
+			if ids, err := h.store.ListEditorIDs(id); err == nil {
+				editorIDs = ids
+			}
 		}
+	}
+	if !meta.IsPublished && role != "owner" && role != "editor" {
+		writeJSON(w, http.StatusNotFound, map[string]any{"ok": false, "error": "world not found"})
+		return
 	}
 	score := h.store.GravityScoreFor(id)
 	headcount := 0
@@ -219,12 +370,17 @@ func (h *Hub) getWorld(w http.ResponseWriter, r *http.Request, id string) {
 			}
 		}
 	}
+	editors := make([]map[string]any, 0, len(editorIDs))
+	for _, uid := range editorIDs {
+		editors = append(editors, map[string]any{"id": uid, "name": h.store.userDisplay(uid)})
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok": true, "world": map[string]any{
 			"id": meta.ID, "name": meta.Name,
 			"is_showcase": meta.IsShowcase, "is_published": meta.IsPublished,
 			"published_at": meta.PublishedAt, "created_at": meta.CreatedAt,
 			"owner":  map[string]any{"id": meta.OwnerID, "name": h.store.userDisplay(meta.OwnerID)},
+			"role":   role, "editors": editors,
 			"gravity": map[string]any{
 				"love": score.Love, "reach": score.Reach,
 				"momentum": score.Momentum, "gravity": score.Gravity,

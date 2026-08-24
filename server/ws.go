@@ -394,6 +394,7 @@ func (c *Client) handleJoin(msg map[string]any) {
 		"sessionId": sess.ID, "selfId": e.ID, "entityId": e.ID,
 		"spaceId": spaceID, "name": e.Name, "x": e.X, "y": e.Y, "dir": e.Dir,
 		"avatar": e.Avatar,
+		"canEdit": c.hub.canEditWorld(sess, sp.World),
 		"world":  sp.World.GeoJSON(),
 		// roster: everyone already in the space (PROTOCOL.md) — the 12Hz
 		// state stream is the live source, but the roster makes peers
@@ -678,7 +679,20 @@ func (h *Hub) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"ok": false, "error": "invalid session"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "sessionId": s.ID, "userId": s.UserID, "name": s.User.Name})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "sessionId": s.ID, "userId": s.UserID, "name": s.User.Name,
+		"worlds": mustMyWorlds(h.store, s.UserID),
+	})
+}
+
+// mustMyWorlds lists the worlds a user owns/edits; failures degrade to an
+// empty list (the identity response must never 500 over a listing hiccup).
+func mustMyWorlds(s *Store, userID string) []map[string]any {
+	list, err := s.ListMyWorlds(userID)
+	if err != nil {
+		return []map[string]any{}
+	}
+	return list
 }
 
 // handleSpaces: POST create (GET lists — convenience).
