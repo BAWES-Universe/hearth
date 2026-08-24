@@ -46,6 +46,7 @@ type Client struct {
 	lastEntities  map[string]entityPos
 	lastSpace     string
 	lastStateSent time.Time
+	dmWindow      map[string][]time.Time // per-recipient DM timestamps (5/min cap)
 }
 
 func newClient(h *Hub, conn *websocket.Conn) *Client {
@@ -55,6 +56,7 @@ func newClient(h *Hub, conn *websocket.Conn) *Client {
 		send:         make(chan []byte, sendQueueSize),
 		rate:         NewTokenBucket(5, 0.5), // burst 5 / 10s, sustained 1 / 2s
 		lastEntities: map[string]entityPos{},
+		dmWindow:     map[string][]time.Time{},
 	}
 }
 
@@ -398,8 +400,11 @@ func (c *Client) handleJoin(msg map[string]any) {
 		// roster: everyone already in the space (PROTOCOL.md) — the 12Hz
 		// state stream is the live source, but the roster makes peers
 		// visible immediately instead of after the first heartbeat.
-		"roster": entityListJSON(sp.EntitySnaps()),
+		// Carries userId so the client can gate the DM button on friends.
+		"roster": rosterListJSON(sp.EntitySnaps()),
 	})
+	// Social clarity roster: additive presence delta (join) to the space.
+	c.hub.broadcastPresence(sp, "join", e)
 	// gravity/audit: presence event (Reach = unique visitors)
 	c.hub.emitActivity(spaceID, sess.UserID, "member", "presence", "join", spaceID,
 		diffJSON(map[string]any{"name": e.Name, "x": e.X, "y": e.Y}), sanitizeIP(c.conn.RemoteAddr().String()))
@@ -485,6 +490,10 @@ func (c *Client) handlePortal(msg map[string]any) {
 	c.setSpace(p.TargetSpace)
 	c.setEntity(c.Entity)
 	c.setPos(p.TargetX, p.TargetY)
+	// Social clarity roster: portal = leave old space + join new (the third
+	// presence hook alongside join and disconnect).
+	c.hub.broadcastPresence(sp, "leave", c.Entity)
+	c.hub.broadcastPresence(target, "join", c.Entity)
 	c.emit("portal", map[string]any{
 		"portalId": p.ID,
 		"spaceId":  p.TargetSpace, "x": p.TargetX, "y": p.TargetY,

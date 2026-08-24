@@ -67,6 +67,18 @@ func (e *EntitySnap) PublicJSON() map[string]any {
 	}
 }
 
+// RosterJSON is PublicJSON plus the owning userId — used ONLY for the
+// welcome roster and the additive presence envelope (the client matches
+// roster rows against its friend list to gate the DM button). The frozen
+// 12Hz state stream keeps PublicJSON's shape.
+func (e *EntitySnap) RosterJSON() map[string]any {
+	m := e.PublicJSON()
+	if e.Client != nil { // ambient bots have no client/user
+		m["userId"] = e.Client.sessionUserID()
+	}
+	return m
+}
+
 // SpatialHash is a uniform 8x8-grid spatial hash for AOI queries.
 type SpatialHash struct {
 	cell int
@@ -310,6 +322,11 @@ type Hub struct {
 	bots       *BotManager // S7 headless builder bot registry (bot.go)
 	sfu        *media.Media
 	bubbles    map[string]string // peerID (entity/session id) -> spaceID voice bubble
+	// recentNonces: per-SESSION chat nonce set for server-side idempotency
+	// (social clarity dup fix). Keyed by session id — not per-connection —
+	// so a reconnect resend (or a retry) of the same nonce within the 30s
+	// TTL cannot double-broadcast or double-insert. Pruned lazily on access.
+	recentNonces map[string]map[string]time.Time
 }
 
 func NewHub(store *Store) *Hub {
@@ -323,6 +340,7 @@ func NewHub(store *Store) *Hub {
 		bots:       NewBotManager(),
 		sfu:        newMediaSFU(),
 		bubbles:    map[string]string{},
+		recentNonces: map[string]map[string]time.Time{},
 	}
 	for _, w := range store.ListWorlds() {
 		h.spaces[w.ID] = NewSpaceState(w)
@@ -374,6 +392,80 @@ func (h *Hub) findEntity(id string) *Entity {
 	return nil
 }
 
+// chatNonceTTL is how long a chat nonce stays dedupe-relevant. Matches the
+// client's pending-message timeout (4s) with wide margin: a reconnect resend
+// or manual retry within 30s of the original send cannot double-broadcast.
+const chatNonceTTL = 30 * time.Second
+
+// chatNonceSeen reports whether sessionID already sent nonce (peek only —
+// does NOT record). Callers record via recordChatNonce only once the message
+// actually passes every gate and is about to be delivered, so a rejected
+// message (rate-limited, DM gate) never burns its nonce.
+func (h *Hub) chatNonceSeen(sessionID, nonce string) bool {
+	if sessionID == "" || nonce == "" {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now()
+	set := h.recentNonces[sessionID]
+	if set == nil {
+		return false
+	}
+	for n, at := range set {
+		if now.Sub(at) > chatNonceTTL {
+			delete(set, n)
+		}
+	}
+	if len(set) == 0 {
+		delete(h.recentNonces, sessionID)
+		return false
+	}
+	_, seen := set[nonce]
+	return seen
+}
+
+// recordChatNonce remembers that sessionID delivered a chat under nonce.
+func (h *Hub) recordChatNonce(sessionID, nonce string) {
+	if sessionID == "" || nonce == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	now := time.Now()
+	set := h.recentNonces[sessionID]
+	if set == nil {
+		set = map[string]time.Time{}
+		h.recentNonces[sessionID] = set
+	}
+	for n, at := range set { // prune stale while we hold the lock
+		if now.Sub(at) > chatNonceTTL {
+			delete(set, n)
+		}
+	}
+	set[nonce] = now
+}
+
+// broadcastPresence pushes an additive {t:'presence'} roster delta to a
+// whole space (social clarity roster: welcome seed + these join/leave deltas
+// are the ONLY membership sources — the 12Hz AOI state stream never adds or
+// removes roster rows). Hooks: join (handleJoin), portal (handlePortal:
+// leave old space + join new), disconnect (removeClient).
+func (h *Hub) broadcastPresence(sp *SpaceState, event string, ent *Entity) {
+	if sp == nil || ent == nil {
+		return
+	}
+	sp.BroadcastEnvelope("presence", map[string]any{
+		"event":   event,
+		"id":      ent.ID,
+		"userId":  ent.UserID,
+		"name":    ent.Name,
+		"bot":     ent.Bot,
+		"avatar":  ent.Avatar,
+		"spaceId": sp.World.ID,
+	})
+}
+
 func (h *Hub) removeClient(c *Client) {
 	h.mu.Lock()
 	if _, ok := h.clients[c]; ok {
@@ -387,6 +479,8 @@ func (h *Hub) removeClient(c *Client) {
 	if ent != nil {
 		if sp := h.space(spaceID); sp != nil {
 			sp.RemoveEntity(ent)
+			// social clarity roster: announce the leave to the space
+			h.broadcastPresence(sp, "leave", ent)
 		}
 		h.dropBubble(ent.ID)
 		c.setEntity(nil)
@@ -446,6 +540,17 @@ func entityListJSON(ents []*EntitySnap) []map[string]any {
 	out := make([]map[string]any, 0, len(ents))
 	for _, e := range ents {
 		out = append(out, e.PublicJSON())
+	}
+	return out
+}
+
+// rosterListJSON is the welcome-roster seed (full space, with userId for
+// friend gating) — the ONLY roster membership source alongside the additive
+// presence deltas.
+func rosterListJSON(ents []*EntitySnap) []map[string]any {
+	out := make([]map[string]any, 0, len(ents))
+	for _, e := range ents {
+		out = append(out, e.RosterJSON())
 	}
 	return out
 }

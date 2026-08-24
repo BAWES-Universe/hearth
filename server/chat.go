@@ -70,21 +70,74 @@ func (c *Client) handleChat(msg map[string]any) {
 		c.sendError("rate_limited", "slow down — burst 5/10s, sustained 1/2s")
 		return
 	}
+	nonce := getString(msg, "nonce")
 
-		payload := map[string]any{
-			"channel": channel,
-			"from":    c.Entity.Name, "fromId": c.Entity.ID,
-			"text": text, "ts": time.Now().UTC().Format(time.RFC3339),
-		}
+	payload := map[string]any{
+		"channel": channel,
+		"from":    c.Entity.Name, "fromId": c.Entity.ID,
+		"text": text, "ts": time.Now().UTC().Format(time.RFC3339),
+		"nonce": nonce,
+	}
+
+	// Server-side nonce idempotency (social clarity dup fix): a resend of a
+	// nonce this session already delivered (reconnect resend, manual retry,
+	// double-tap) is echoed to the SENDER ONLY — no re-broadcast, no second
+	// DB row. The nonce is recorded (recordChatNonce) only once the message
+	// passes every gate below and is actually delivered, so a rejected send
+	// never burns its nonce.
+	if nonce != "" && c.hub.chatNonceSeen(c.Session.ID, nonce) {
+		c.emit("chat", payload)
+		log.Printf("chat[%s] %s: nonce %s deduped (echo sender only)", channel, c.Entity.Name, nonce)
+		return
+	}
 
 	sp := c.hub.space(c.spaceID)
 	if sp == nil {
 		return
 	}
 	switch channel {
+	case "dm":
+		to := getString(msg, "to")
+		if to == "" {
+			c.sendError("dm_requires_peer", "dm requires a recipient id")
+			return
+		}
+		if to == c.Entity.ID {
+			c.sendError("dm_self", "you cannot message yourself")
+			return
+		}
+		target := c.hub.findEntity(to)
+		if target == nil || target.Client == nil {
+			c.sendError("peer_not_found", "dm target offline: "+to)
+			return
+		}
+		// Friends-only v1 (critic guardrail): the server enforces the
+		// friendship graph, blocks (either direction), a per-recipient
+		// 5/min cap, and rejects self-DM — the client UI is not the gate.
+		if c.Session == nil || target.UserID == "" || !c.hub.store.AreFriends(c.Session.UserID, target.UserID) {
+			c.sendError("dm_forbidden", "dm requires being friends")
+			return
+		}
+		if c.hub.store.AreBlocked(c.Session.UserID, target.UserID) {
+			c.sendError("dm_blocked", "this conversation is blocked")
+			return
+		}
+		if !c.allowDMRate(to) {
+			c.sendError("dm_rate_limited", "slow down — 5 DMs per minute to one person")
+			return
+		}
+		c.hub.recordChatNonce(c.Session.ID, nonce)
+		payload["to"] = target.ID
+		payload["toName"] = target.Name
+		// DM echoes to BOTH target and sender (with nonce): the sender's
+		// pending message resolves on the echo; the target gets the copy.
+		target.Client.emit("chat", payload)
+		c.emit("chat", payload)
 	case "space":
+		c.hub.recordChatNonce(c.Session.ID, nonce)
 		sp.BroadcastEnvelope("chat", payload)
 	case "global":
+		c.hub.recordChatNonce(c.Session.ID, nonce)
 		// Across ALL spaces — the chat sheet's "All" tab. Every connected
 		// client in every world receives it.
 		h := c.hub
@@ -98,6 +151,7 @@ func (c *Client) handleChat(msg map[string]any) {
 			s.BroadcastEnvelope("chat", payload)
 		}
 	case "proximity":
+		c.hub.recordChatNonce(c.Session.ID, nonce)
 		// WorkAdventure-style: short bubble range, and the SENDER is
 		// included (skip="") so their own bubble renders and their pending
 		// sheet message resolves — without the echo the pending message
@@ -107,20 +161,34 @@ func (c *Client) handleChat(msg map[string]any) {
 				e.Client.emit("chat", payload)
 			}
 		}
-	case "dm":
-		to := getString(msg, "to")
-		target := c.hub.findEntity(to)
-		if target == nil || target.Client == nil {
-			c.sendError("peer_not_found", "dm target offline: "+to)
-			return
-		}
-		target.Client.emit("chat", payload)
 	}
 
 	if err := c.hub.store.InsertMessage(c.spaceID, c.Session.ID, c.Session.UserID, c.Entity.Name, channel, text); err != nil {
 		log.Printf("insert message: %v", err)
 	}
 	log.Printf("chat[%s] %s: %.60s", channel, c.Entity.Name, text)
+}
+
+// allowDMRate enforces the per-recipient DM cap (5 messages per minute to
+// the same person). Independent of the global chat token bucket: the burst
+// limiter throttles throughput, this window throttles harassment volume.
+func (c *Client) allowDMRate(peerID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := time.Now()
+	window := c.dmWindow[peerID]
+	kept := window[:0]
+	for _, ts := range window {
+		if now.Sub(ts) < time.Minute {
+			kept = append(kept, ts)
+		}
+	}
+	if len(kept) >= 5 {
+		c.dmWindow[peerID] = kept
+		return false
+	}
+	c.dmWindow[peerID] = append(kept, now)
+	return true
 }
 
 // BroadcastToClients sends v to every connected player in this space.

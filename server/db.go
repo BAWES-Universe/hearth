@@ -179,6 +179,24 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (user_id, friend_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_friends_user ON friends(user_id, status)`,
+		// Social clarity: blocks (one row per direction — a block in EITHER
+		// direction suppresses DMs) and reports (abuse reporting, moderation
+		// dashboard reads them; POST /api/reports writes them).
+		`CREATE TABLE IF NOT EXISTS blocks (
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY (user_id, blocked_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS reports (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			reporter_id TEXT NOT NULL,
+			reported_id TEXT NOT NULL,
+			space_id TEXT NOT NULL DEFAULT '',
+			reason TEXT NOT NULL DEFAULT '',
+			ts TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_reports_reported ON reports(reported_id)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -835,6 +853,39 @@ func (s *Store) CountSessions() (int, error) {
 func (s *Store) InsertMessage(spaceID, sessionID, userID, name, channel, text string) error {
 	_, err := s.db.Exec(`INSERT INTO messages (space_id, session_id, user_id, name, channel, text, ts) VALUES (?,?,?,?,?,?,?)`,
 		spaceID, sessionID, userID, name, channel, text, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+// --- social clarity: blocks + reports ---
+
+// BlockUser records a one-direction block (a -> b). Either direction is
+// sufficient to suppress DMs between the pair (AreBlocked checks both).
+func (s *Store) BlockUser(a, b string) error {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO blocks (user_id, blocked_id, created_at) VALUES (?,?,?)`,
+		a, b, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+// UnblockUser removes a one-direction block (a -> b).
+func (s *Store) UnblockUser(a, b string) error {
+	_, err := s.db.Exec(`DELETE FROM blocks WHERE user_id = ? AND blocked_id = ?`, a, b)
+	return err
+}
+
+// AreBlocked reports whether EITHER direction of the pair is blocked — a DM
+// is suppressed when a blocked either b or b blocked a.
+func (s *Store) AreBlocked(a, b string) bool {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM blocks WHERE (user_id = ? AND blocked_id = ?) OR (user_id = ? AND blocked_id = ?)`,
+		a, b, b, a).Scan(&n)
+	return err == nil && n > 0
+}
+
+// InsertReport appends one abuse report row (moderation dashboard reads it).
+func (s *Store) InsertReport(reporterID, reportedID, spaceID, reason string) error {
+	_, err := s.db.Exec(`INSERT INTO reports (reporter_id, reported_id, space_id, reason, ts) VALUES (?,?,?,?,?)`,
+		reporterID, reportedID, spaceID, reason, time.Now().UTC().Format(time.RFC3339))
 	return err
 }
 
