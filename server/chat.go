@@ -19,6 +19,11 @@ type TokenBucket struct {
 	last     time.Time
 }
 
+// chatProximityRadius is the WorkAdventure-style bubble range: proximity
+// chat reaches players within this many tiles. Presence AOI stays at
+// aoiRadius (20) — being near is not the same as being able to whisper.
+const chatProximityRadius = 6
+
 func NewTokenBucket(capacity, rate float64) *TokenBucket {
 	return &TokenBucket{capacity: capacity, tokens: capacity, rate: rate, last: time.Now()}
 }
@@ -47,9 +52,9 @@ func (c *Client) handleChat(msg map[string]any) {
 	}
 	channel := getString(msg, "channel")
 	switch channel {
-	case "proximity", "space", "dm":
+	case "proximity", "space", "dm", "global":
 	default:
-		c.sendError("invalid_channel", "channel must be proximity|space|dm")
+		c.sendError("invalid_channel", "channel must be proximity|space|dm|global")
 		return
 	}
 	text := getString(msg, "text")
@@ -79,8 +84,25 @@ func (c *Client) handleChat(msg map[string]any) {
 	switch channel {
 	case "space":
 		sp.BroadcastEnvelope("chat", payload)
+	case "global":
+		// Across ALL spaces — the chat sheet's "All" tab. Every connected
+		// client in every world receives it.
+		h := c.hub
+		h.mu.RLock()
+		spaces := make([]*SpaceState, 0, len(h.spaces))
+		for _, s := range h.spaces {
+			spaces = append(spaces, s)
+		}
+		h.mu.RUnlock()
+		for _, s := range spaces {
+			s.BroadcastEnvelope("chat", payload)
+		}
 	case "proximity":
-		for _, e := range sp.AOI(c.Entity.X, c.Entity.Y, aoiRadius, c.Entity.ID) {
+		// WorkAdventure-style: short bubble range, and the SENDER is
+		// included (skip="") so their own bubble renders and their pending
+		// sheet message resolves — without the echo the pending message
+		// would sit at "…" forever.
+		for _, e := range sp.AOI(c.Entity.X, c.Entity.Y, chatProximityRadius, "") {
 			if e.Client != nil {
 				e.Client.emit("chat", payload)
 			}

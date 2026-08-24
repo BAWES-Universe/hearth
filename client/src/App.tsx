@@ -96,7 +96,7 @@ export function App() {
   const [spaceName, setSpaceName] = useState('town-square');
   const [isPublished, setIsPublished] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [channel, setChannel] = useState<'proximity' | 'space'>('proximity');
+  const [channel, setChannel] = useState<'proximity' | 'space' | 'global'>('proximity');
   const [sheetOpen, setSheetOpen] = useState(false);
   const [unread, setUnread] = useState(0);
 
@@ -419,7 +419,11 @@ export function App() {
         onState: (states) => rendererRef.current?.updateState(states),
         onChat: (d) => {
           const from = d.from ?? '?';
-          const ch: 'proximity' | 'space' = d.channel === 'space' ? 'space' : 'proximity';
+          const ch: 'proximity' | 'space' | 'global' = d.channel === 'space' ? 'space' : d.channel === 'global' ? 'global' : 'proximity';
+          // proximity chat from others → speech bubble above their avatar
+          if (ch === 'proximity' && from !== selfIdRef.current) {
+            rendererRef.current?.showBubble(from, d.text);
+          }
           setMessages((prev) => {
             if (from === selfIdRef.current) {
               const idx = prev.findIndex((m) => m.self && m.pending && m.channel === ch && m.text === d.text);

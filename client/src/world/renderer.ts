@@ -614,7 +614,58 @@ export class WorldRenderer {
       r.buf.prune(now);
       r.label.alpha = labelsVisible ? 0.9 : 0;
     }
+    this.tickBubbles(now);
     this.maybeSendMove(now);
+  }
+
+  // ------------------------------------------------------------ bubbles
+
+  private bubbles = new Map<string, { text: Text; bg: Graphics; until: number }>();
+
+  /** Show a speech bubble above the given player (remote or self) for ~5s. */
+  showBubble(entityId: string, text: string): void {
+    const existing = this.bubbles.get(entityId);
+    if (existing) {
+      existing.text.text = text;
+      existing.until = performance.now() + 5000;
+      return;
+    }
+    const textObj = new Text(text, {
+      fontFamily: 'system-ui, sans-serif',
+      fontSize: 13,
+      fill: 0x111111,
+      wordWrap: true,
+      wordWrapWidth: 180,
+    });
+    const bg = new Graphics()
+      .roundRect(-6, -6, textObj.width + 12, textObj.height + 10, 8)
+      .fill({ color: 0xffffff, alpha: 0.95 });
+    bg.position.set(0, 0);
+    this.playerLayer.addChild(bg, textObj);
+    this.bubbles.set(entityId, { text: textObj, bg, until: performance.now() + 5000 });
+  }
+
+  private tickBubbles(now: number): void {
+    for (const [id, b] of this.bubbles) {
+      const holder = id === this.selfId ? this.local : this.remotes.get(id);
+      if (holder && holder.sprite) {
+        const x = holder.sprite.position.x;
+        const y = holder.sprite.position.y - TILE * 1.35;
+        b.bg.position.set(x, y);
+        b.text.position.set(x, y - 2);
+        const left = b.until - now;
+        const alpha = left < 800 ? left / 800 : 1;
+        b.bg.alpha = 0.95 * alpha;
+        b.text.alpha = alpha;
+        if (left <= 0) {
+          this.playerLayer.removeChild(b.bg, b.text);
+          this.bubbles.delete(id);
+        }
+      } else if (now > b.until) {
+        this.playerLayer.removeChild(b.bg, b.text);
+        this.bubbles.delete(id);
+      }
+    }
   }
 
   private stepPath(dt: number): void {

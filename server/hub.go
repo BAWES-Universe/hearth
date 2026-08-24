@@ -217,6 +217,13 @@ func (sp *SpaceState) AddEntity(e *Entity) {
 	if e.X == 0 && e.Y == 0 {
 		e.X, e.Y = sp.World.Spawn.X, sp.World.Spawn.Y
 	}
+	// Spawn safety: never park an entity on an impassable tile. Polluted
+	// maps (walls painted on/near the spawn point — town-square live-test
+	// bug) otherwise freeze tap-to-move: the client A* refuses a blocked
+	// start, so a player spawned inside a wall can never move.
+	if nx, ny, ok := sp.World.NearestPassable(e.X, e.Y); ok {
+		e.X, e.Y = nx, ny
+	}
 	sp.entities[e.ID] = e
 	sp.hash.Insert(e)
 }
@@ -425,11 +432,11 @@ func (h *Hub) broadcastStates() {
 			}
 			near := sp.AOI(lx, ly, aoiRadius, eid)
 			if c.shouldSendState(sp.World.ID, near, now) {
-				c.emit("state", map[string]any{
-					"spaceId":  sp.World.ID,
-					"entities": entityListJSON(near),
-					"t":        now.UnixMilli(),
-				})
+				// FROZEN contract (PROTOCOL.md): state's d is the entity
+				// ARRAY itself. The old object wrapper {spaceId,entities,t}
+				// made the client's Array.isArray(d) check fail and remotes
+				// silently never rendered (live-test: friend invisible).
+				c.emit("state", entityListJSON(near))
 			}
 		}
 	}

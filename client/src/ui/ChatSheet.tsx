@@ -3,7 +3,7 @@ import { cssColor } from '../colors';
 
 export interface ChatMessage {
   id: string;
-  channel: 'proximity' | 'space';
+  channel: 'proximity' | 'space' | 'global';
   from: string;
   text: string;
   ts: number;
@@ -15,8 +15,8 @@ export interface ChatMessage {
 interface Props {
   open: boolean;
   onClose(): void;
-  channel: 'proximity' | 'space';
-  onChannel(c: 'proximity' | 'space'): void;
+  channel: 'proximity' | 'space' | 'global';
+  onChannel(c: 'proximity' | 'space' | 'global'): void;
   messages: ChatMessage[];
   onSend(text: string): void;
 }
@@ -43,13 +43,17 @@ export function ChatSheet({ open, onClose, channel, onChannel, messages, onSend 
       <div class="sheet" onClick={(e) => e.stopPropagation()}>
         <div class="sheet-grabber" />
         <div class="sheet-tabs">
-          {(['proximity', 'space'] as const).map((c) => (
+          {([
+            ['proximity', 'Nearby'],
+            ['space', 'Space'],
+            ['global', 'All'],
+          ] as const).map(([c, label]) => (
             <button
               key={c}
               class={`tab${channel === c ? ' active' : ''}`}
               onClick={() => onChannel(c)}
             >
-              {c === 'proximity' ? 'Proximity' : 'Space'}
+              {label}
             </button>
           ))}
         </div>
@@ -79,7 +83,7 @@ export function ChatSheet({ open, onClose, channel, onChannel, messages, onSend 
           <input
             value={draft}
             onInput={(e) => setDraft((e.target as HTMLInputElement).value)}
-            placeholder={`Message ${channel === 'proximity' ? 'nearby' : 'the space'}…`}
+            placeholder={`Message ${channel === 'proximity' ? 'nearby' : channel === 'global' ? 'everyone' : 'the space'}…`}
             maxLength={2000}
             enterkeyhint="send"
             autocomplete="off"

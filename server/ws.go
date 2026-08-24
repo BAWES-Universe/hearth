@@ -100,10 +100,12 @@ func (c *Client) enqueueJSON(v any) {
 	c.enqueue(b)
 }
 
-// emit sends a PROTOCOL.md envelope: {"v":1,"t":"<type>","d":{...}}.
+// emit sends a PROTOCOL.md envelope: {"v":1,"t":"<type>","d":...}.
 // All server->client messages must go through this so the wire format stays
-// the frozen contract. (Legacy flat "type" messages are removed.)
-func (c *Client) emit(t string, d map[string]any) {
+// the frozen contract. d is ANY JSON — most types carry an object, but the
+// frozen "state" type carries the entity ARRAY itself (PROTOCOL.md). (Legacy
+// flat "type" messages are removed.)
+func (c *Client) emit(t string, d any) {
 	c.enqueueJSON(map[string]any{"v": 1, "t": t, "d": d})
 }
 
@@ -393,6 +395,10 @@ func (c *Client) handleJoin(msg map[string]any) {
 		"spaceId": spaceID, "name": e.Name, "x": e.X, "y": e.Y, "dir": e.Dir,
 		"avatar": e.Avatar,
 		"world":  sp.World.GeoJSON(),
+		// roster: everyone already in the space (PROTOCOL.md) — the 12Hz
+		// state stream is the live source, but the roster makes peers
+		// visible immediately instead of after the first heartbeat.
+		"roster": entityListJSON(sp.EntitySnaps()),
 	})
 	// gravity/audit: presence event (Reach = unique visitors)
 	c.hub.emitActivity(spaceID, sess.UserID, "member", "presence", "join", spaceID,
