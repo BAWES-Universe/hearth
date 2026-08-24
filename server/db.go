@@ -179,6 +179,12 @@ func (s *Store) migrate() error {
 			PRIMARY KEY (user_id, friend_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_friends_user ON friends(user_id, status)`,
+	// --- BYOK (Ox decision 2026-08-24): fingerprint-only key status + usage
+	// audit. There is NO key column anywhere — keys live client-side; the
+	// server keeps sha256(key)[:8] for status display and token usage rows. ---
+	byokStatusDDL,
+	aiUsageDDL,
+	aiUsageIdxDDL,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {

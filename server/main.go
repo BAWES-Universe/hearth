@@ -84,6 +84,12 @@ func main() {
 	mux.HandleFunc("/api/friends", hub.handleFriends)
 	mux.HandleFunc("/api/friends/", hub.handleFriendRoute)
 	mux.HandleFunc("/api/users", hub.handleUsers)
+	// BYOK (Bring Your Own Key): users paste their own OpenRouter key; the
+	// server stores only a fingerprint (see server/byok.go — Ox-decided).
+	mux.HandleFunc("/api/byok", hub.handleByok)          // POST upsert+validate, GET status, DELETE revoke
+	mux.HandleFunc("/api/byok/status", hub.handleByok)   // GET key presence
+	mux.HandleFunc("/api/byok/contribution", hub.handleByok) // GET per-key impact
+	mux.HandleFunc("/api/byok/use", hub.byokUse)         // POST agent-integration proxy (in-memory key)
 	mux.HandleFunc("/ws", hub.handleWS)
 	hub.RegisterAdminRoutes(mux) // S9: /api/admin/* + embedded /admin console
 	// T2: Model Context Protocol — streamable HTTP JSON-RPC endpoint for AI
