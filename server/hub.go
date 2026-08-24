@@ -310,6 +310,7 @@ type Hub struct {
 	bots       *BotManager // S7 headless builder bot registry (bot.go)
 	sfu        *media.Media
 	bubbles    map[string]string // peerID (entity/session id) -> spaceID voice bubble
+	avatarReg  *AvatarRegistry   // T2 avatar governance snapshot (avatars_t2.go)
 }
 
 func NewHub(store *Store) *Hub {
@@ -323,6 +324,7 @@ func NewHub(store *Store) *Hub {
 		bots:       NewBotManager(),
 		sfu:        newMediaSFU(),
 		bubbles:    map[string]string{},
+		avatarReg:  newAvatarRegistry(),
 	}
 	for _, w := range store.ListWorlds() {
 		h.spaces[w.ID] = NewSpaceState(w)

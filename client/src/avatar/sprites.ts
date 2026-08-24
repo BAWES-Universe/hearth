@@ -3,11 +3,124 @@
 // files. Every viewer renders the same spec identically. Minimal animation:
 // 2-frame walk bob, plus sit/emote stubs that ride the same pipeline.
 
-import { isRobotSpec, type AvatarLayerId, type AvatarSpec } from './spec';
+import { isAssetOption, isRobotSpec, type AvatarLayerId, type AvatarSpec } from './spec';
 
 export const AV_PX = 128;
 /** Re-exported so renderers can style robot labels without importing spec.ts. */
 export { isRobotSpec };
+
+// ---- T2: custom uploaded assets -----------------------------------------
+// A layer value of "asset:<uuid>" draws the member's uploaded image (fetched
+// from /api/avatars/assets/{id}/image — same origin, session cookie, so the
+// canvas stays untainted and the SAME bytes render identically for every
+// viewer). Loads are cached; avatarAssetRev() bumps when an image lands so
+// renderers (picker previews, world sprite caches) can rebuild once fresh.
+
+const assetImgCache = new Map<string, HTMLImageElement>();
+let assetRev = 0;
+const assetLoadCbs = new Set<() => void>();
+
+/** Monotonic counter bumped whenever a custom asset image finishes loading
+ *  (or fails) — cache keys built from it refresh stale render passes. */
+export function avatarAssetRev(): number {
+  return assetRev;
+}
+
+/** Subscribe to asset image load/fail events; returns an unsubscribe fn. */
+export function onAvatarAssetLoad(cb: () => void): () => void {
+  assetLoadCbs.add(cb);
+  return () => {
+    assetLoadCbs.delete(cb);
+  };
+}
+
+/** Returns the cached image when loaded; otherwise kicks off the fetch and
+ *  returns undefined (caller draws a placeholder; re-renders on load). */
+export function loadAvatarAsset(id: string, base = ''): HTMLImageElement | undefined {
+  const hit = assetImgCache.get(id);
+  if (hit) return hit.complete && hit.naturalWidth > 0 ? hit : undefined;
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    assetImgCache.set(id, img);
+    assetRev++;
+    assetLoadCbs.forEach((cb) => cb());
+  };
+  img.onerror = () => {
+    assetImgCache.delete(id);
+    assetRev++;
+    assetLoadCbs.forEach((cb) => cb());
+  };
+  img.src = `${base}/api/avatars/assets/${encodeURIComponent(id)}/image`;
+  assetImgCache.set(id, img);
+  return undefined;
+}
+
+/** Cover-fits the asset image into a layer rect (canvas px, 128 space). */
+function drawAssetCover(
+  ctx: CanvasRenderingContext2D,
+  id: string,
+  rect: { x: number; y: number; w: number; h: number },
+  base = '',
+): boolean {
+  const img = loadAvatarAsset(id, base);
+  if (!img || !img.complete || img.naturalWidth === 0) return false;
+  const s = Math.max(rect.w / img.naturalWidth, rect.h / img.naturalHeight);
+  const dw = img.naturalWidth * s;
+  const dh = img.naturalHeight * s;
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(rect.x, rect.y, rect.w, rect.h);
+  ctx.clip();
+  ctx.drawImage(img, rect.x + (rect.w - dw) / 2, rect.y + (rect.h - dh) / 2, dw, dh);
+  ctx.restore();
+  return true;
+}
+
+/** The 128-space rect a layer occupies (asset images are cover-fitted here). */
+function layerRect(layer: AvatarLayerId, g: Geom): { x: number; y: number; w: number; h: number } {
+  switch (layer) {
+    case 'body':
+      return { x: g.head.x - 2, y: g.head.y - 2, w: Math.max(g.head.w, g.torso.w) + 6, h: g.torso.y + g.torso.h - g.head.y + 4 };
+    case 'skin':
+      return { x: g.head.x + 3, y: g.head.y + 3, w: g.head.w - 6, h: g.head.h - 6 };
+    case 'hair':
+      return { x: g.head.x - 2, y: g.head.y - 1, w: g.head.w + 4, h: Math.round(g.head.h * 0.45) + 3 };
+    case 'outfit':
+      return { x: g.torso.x, y: g.torso.y, w: g.torso.w, h: g.torso.h };
+    case 'accessory':
+      return { x: g.head.x - 4, y: g.head.y - 8, w: g.head.w + 8, h: g.head.h + 8 };
+  }
+}
+
+/** Draws a layer: the uploaded image when the value is an asset (falling
+ *  back to the procedural draw until the image loads), else procedural. */
+function drawLayer(
+  ctx: CanvasRenderingContext2D,
+  layer: AvatarLayerId,
+  spec: AvatarSpec,
+  g: Geom,
+  base: string,
+  fallback: () => void,
+): void {
+  const id = layerValueOf(layer, spec);
+  if (isAssetOption(id)) {
+    if (!drawAssetCover(ctx, id, layerRect(layer, g), base)) fallback();
+    return;
+  }
+  fallback();
+}
+
+function layerValueOf(layer: AvatarLayerId, spec: AvatarSpec): string {
+  switch (layer) {
+    case 'body': return spec.body;
+    case 'skin': return spec.skin;
+    case 'hair': return spec.hair;
+    case 'outfit': return spec.outfit;
+    case 'accessory': return spec.accessory;
+    default: return '';
+  }
+}
 
 /** 4-frame walk bob heights (canvas px) — shared with renderers. */
 const WALK_BOB = [0, -8, -3, -8] as const;
@@ -426,7 +539,7 @@ function drawAccessory(
  * planted); pose 'sit' lowers and squashes; emote 'wave' raises an arm +
  * bubble.
  */
-export function renderAvatarSpec(spec: AvatarSpec, pose: SpritePose = {}): HTMLCanvasElement {
+export function renderAvatarSpec(spec: AvatarSpec, pose: SpritePose = {}, base = ''): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = AV_PX;
   c.height = AV_PX;
@@ -452,11 +565,19 @@ export function renderAvatarSpec(spec: AvatarSpec, pose: SpritePose = {}): HTMLC
     g.torso.h = Math.round(g.torso.h * 0.8);
     g.torso.y += 6;
   }
-  drawBody(ctx, spec.body, g);
-  drawOutfit(ctx, spec, g);
-  drawFace(ctx, spec, g, dir);
-  drawHair(ctx, spec, g);
-  drawAccessory(ctx, spec, g, emote);
+  const robot = spec.body === 'bot';
+  // body asset replaces the whole silhouette (likely a complete figure)
+  drawLayer(ctx, 'body', spec, g, base, () => drawBody(ctx, spec.body, g));
+  drawLayer(ctx, 'outfit', spec, g, base, () => {
+    if (!robot) drawOutfit(ctx, spec, g);
+  });
+  // skin asset replaces the face (eyes/mouth stay procedural when skin is a
+  // normal catalog option); a body asset already carries its own face
+  drawLayer(ctx, 'skin', spec, g, base, () => {
+    if (!robot && !isAssetOption(spec.body)) drawFace(ctx, spec, g, dir);
+  });
+  drawLayer(ctx, 'hair', spec, g, base, () => drawHair(ctx, spec, g));
+  drawLayer(ctx, 'accessory', spec, g, base, () => drawAccessory(ctx, spec, g, emote));
 
   if (sit) {
     // sit stub: legs forward
@@ -470,8 +591,10 @@ export function renderAvatarSpec(spec: AvatarSpec, pose: SpritePose = {}): HTMLC
   return c;
 }
 
-/** Renders a single layer option as a small square preview (picker swatches). */
-export function renderAvatarLayer(layer: AvatarLayerId, optionId: string, size = 56): HTMLCanvasElement {
+/** Renders a single layer option as a small square preview (picker swatches).
+ *  Custom assets draw their uploaded image cover-fit (procedural fallback
+ *  until the image loads). */
+export function renderAvatarLayer(layer: AvatarLayerId, optionId: string, size = 56, base = ''): HTMLCanvasElement {
   const c = document.createElement('canvas');
   c.width = size;
   c.height = size;
@@ -480,7 +603,18 @@ export function renderAvatarLayer(layer: AvatarLayerId, optionId: string, size =
   ctx.save();
   ctx.scale(k, k);
 
-  if (layer === 'body') {
+  if (isAssetOption(optionId)) {
+    if (!drawAssetCover(ctx, optionId, { x: 0, y: 0, w: 128, h: 128 }, base)) {
+      // placeholder: neutral silhouette chip while the image loads
+      ctx.fillStyle = 'rgba(167,139,250,0.28)';
+      ctx.fillRect(0, 0, 128, 128);
+      ctx.fillStyle = 'rgba(233,226,245,0.55)';
+      ctx.font = 'bold 40px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('…', 64, 68);
+    }
+  } else if (layer === 'body') {
     drawBody(ctx, optionId, bodyGeom(optionId));
   } else {
     // neutral mini figure, then overlay the chosen layer

@@ -2,7 +2,7 @@
 // Each layer has >= 4 options; npcOnly options exist for bots/NPCs only and
 // are hidden from the human picker (server also rejects them for humans).
 
-import type { AvatarLayerId, AvatarSpec } from './spec';
+import { isAssetOption, type AvatarLayerId, type AvatarSpec } from './spec';
 
 export interface AvatarOptionDef {
   id: string;
@@ -84,6 +84,10 @@ export function layerOptions(id: AvatarLayerId): AvatarOptionDef[] {
 }
 
 export function optionOf(id: AvatarLayerId, optionId: string): AvatarOptionDef | undefined {
+  if (isAssetOption(optionId)) {
+    // custom uploaded asset — synthetic picker entry ("Custom" label)
+    return { id: optionId, label: 'Custom', swatch: '#a78bfa' };
+  }
   return LAYER_CATALOG.find((l) => l.id === id)?.options.find((o) => o.id === optionId);
 }
 

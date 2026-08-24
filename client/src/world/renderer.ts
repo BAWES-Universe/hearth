@@ -18,8 +18,8 @@ import {
   texKey,
   tileVariant,
 } from './tiles';
-import { renderAvatarSpec } from '../avatar/sprites';
-import { specAccent, specKey as specKeyOf, type AvatarInfo, type AvatarSpec } from '../avatar/spec';
+import { onAvatarAssetLoad, renderAvatarSpec } from '../avatar/sprites';
+import { isAssetOption, specAccent, specKey as specKeyOf, type AvatarInfo, type AvatarSpec } from '../avatar/spec';
 
 export interface LocalMove {
   x: number;
@@ -68,6 +68,8 @@ interface Remote {
   dir: string;
   /** spec cache key when this remote renders the layered composite. */
   specKey: string;
+  /** the layered spec itself (kept so asset images can refresh the sprite). */
+  spec?: AvatarSpec;
   /** true while the interpolated position is actually changing. */
   moving: boolean;
   lastX: number;
@@ -346,7 +348,19 @@ export class WorldRenderer {
 
   private lastMoveSent = 0;
 
-  constructor(private onLocalMove: (m: LocalMove) => void) {}
+  constructor(private onLocalMove: (m: LocalMove) => void) {
+    // T2: when a custom asset image lands (or fails), drop cached composite
+    // frames and refresh any remote whose look uses assets — placeholder
+    // frames swap to the real image without waiting for the next state tick.
+    onAvatarAssetLoad(() => {
+      this.specFrames.clear();
+      for (const r of this.remotes.values()) {
+        if (r.spec && [r.spec.body, r.spec.skin, r.spec.hair, r.spec.outfit, r.spec.accessory].some(isAssetOption)) {
+          r.sprite.texture = this.avatarFrames(r.spec).down[0];
+        }
+      }
+    });
+  }
 
   async init(container: HTMLElement): Promise<void> {
     this.textures = generateTileTextures();
@@ -770,11 +784,12 @@ export class WorldRenderer {
       const label = this.makeLabel(name || id.slice(0, 6), color);
       const shadow = this.makeShadow();
       this.playerLayer.addChild(shadow, sprite, label);
-      rem = { sprite, shadow, label, buf: new InterpBuffer(100), dir: 'down', specKey, moving: false, lastX: -1, lastY: -1 };
+      rem = { sprite, shadow, label, buf: new InterpBuffer(100), dir: 'down', specKey, spec, moving: false, lastX: -1, lastY: -1 };
       this.remotes.set(id, rem);
     } else if (avatar?.spec && rem.specKey !== specKeyOf(avatar.spec)) {
       // layered spec may arrive on a later state tick — upgrade in place
       rem.specKey = specKeyOf(avatar.spec);
+      rem.spec = avatar.spec;
       rem.sprite.texture = this.avatarFrames(avatar.spec).down[0];
       rem.sprite.tint = 0xffffff;
       rem.label.style.fill = hexToNum(specAccent(avatar.spec));
@@ -798,6 +813,9 @@ export class WorldRenderer {
   }
 
   private avatarFrames(spec: AvatarSpec): AvatarFrames {
+    // custom assets bake image bytes into the frames; the cache is cleared
+    // wholesale when an asset image loads (see constructor), so the key is
+    // just the spec key — no unbounded rev-keyed growth
     const key = specKeyOf(spec);
     let f = this.specFrames.get(key);
     if (!f) {

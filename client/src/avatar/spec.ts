@@ -29,13 +29,21 @@ export function defaultAvatarSpec(): AvatarSpec {
   return { v: AVATAR_SPEC_V, body: 'round', skin: 'warm', hair: 'bob', outfit: 'hoodie', accessory: 'none' };
 }
 
+/** True when a layer value is a custom uploaded asset (T2 option id "asset:<uuid>"). */
+export function isAssetOption(id: string): boolean {
+  return typeof id === 'string' && id.startsWith('asset:') && id.length > 6;
+}
+
 /** Normalize a partial/incoming spec: unknown layers fall back per layer. */
 export function normalizeSpec(s: Partial<AvatarSpec> | null | undefined): AvatarSpec {
   const base = defaultAvatarSpec();
   if (!s) return base;
   const pick = (layer: AvatarLayerId, fallback: string): string => {
     const v = s[layer];
-    return typeof v === 'string' && v.length > 0 && v.length <= 24 ? v : fallback;
+    if (typeof v !== 'string' || v.length === 0) return fallback;
+    // custom assets carry "asset:<uuid>" (longer than catalog ids)
+    if (isAssetOption(v)) return v.length <= 64 ? v : fallback;
+    return v.length <= 24 ? v : fallback;
   };
   return {
     v: AVATAR_SPEC_V,

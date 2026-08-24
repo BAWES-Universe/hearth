@@ -259,6 +259,8 @@ func (c *Client) handleMessage(raw []byte) {
 		c.handleMediaSignal(msg)
 	case "bot_msg":
 		c.handleBotMsg(msg)
+	case "avatar_update":
+		c.handleAvatarUpdate(msg)
 	case "ping":
 		c.emit("pong", map[string]any{"t": time.Now().UnixMilli()})
 	default:
@@ -360,7 +362,7 @@ func (c *Client) handleJoin(msg map[string]any) {
 	// here (the layered spec is validated by resolveAvatarSpec).
 	if a, ok := msg["avatar"].(map[string]any); ok {
 		if spec := parseAvatarSpec(a); spec != nil {
-			s := resolveAvatarSpec(sess.UserID, spec)
+			s := resolveAvatarSpecT2(c.hub, sess.UserID, spec, sanitizeIP(c.conn.RemoteAddr().String()))
 			e.Avatar.Spec = &s
 		}
 		if col := getString(a, "color"); hexColorRe.MatchString(col) {
@@ -371,7 +373,7 @@ func (c *Client) handleJoin(msg map[string]any) {
 		}
 	}
 	if e.Avatar.Spec == nil {
-		s := resolveAvatarSpec(sess.UserID, nil)
+		s := resolveAvatarSpecT2(c.hub, sess.UserID, nil, sanitizeIP(c.conn.RemoteAddr().String()))
 		e.Avatar.Spec = &s
 	}
 	if e.Avatar.Color == "" {
