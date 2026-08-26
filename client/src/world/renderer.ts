@@ -292,6 +292,9 @@ export class WorldRenderer {
   private tileLayer = new Container();
   private playerLayer = new Container();
   private glowLayer = new Container();
+  /** BRICK WORLD M1: claimable-plot marker layer (frontier districts). */
+  private plotLayer = new Container();
+  private plotRing: Graphics | null = null;
   private floorSprite: TilingSprite | null = null;
 
   // screen-space atmosphere (sky < world < wash < vignette)
@@ -402,7 +405,7 @@ export class WorldRenderer {
     this.vignetteSprite = vig;
 
     this.app.stage.addChild(sky, this.world, wash, vig);
-    this.world.addChild(this.tileLayer, this.mineLayer, this.moveDust, this.playerLayer, this.glowLayer);
+    this.world.addChild(this.tileLayer, this.mineLayer, this.moveDust, this.playerLayer, this.plotLayer, this.glowLayer);
     this.bindInput(cv);
     this.app.ticker.add((t) => this.tick(t.deltaMS / 1000));
     this.app.renderer.on('resize', () => this.resizeOverlays());
@@ -644,6 +647,7 @@ export class WorldRenderer {
     this.pan = { x: 0, y: 0 };
     this.path = null;
     this.mineLayer.clear();
+    this.clearPlot();
     this.moveDust.clear();
     this.rebuildGlows();
     this.initFireflies();
@@ -966,6 +970,8 @@ export class WorldRenderer {
   private tick(dt: number): void {
     const now = performance.now();
     this.stepPath(dt);
+    // BRICK WORLD M1: pulse the claimable-plot ring.
+    if (this.plotRing) this.plotRing.alpha = 0.7 + Math.sin(now * 0.004) * 0.3;
     this.updateCamera(dt);
     this.tickAtmosphere(dt);
     // walk: 4-frame cycle at 8Hz (0.125s/frame) while moving; gentle 2-frame
@@ -1262,5 +1268,32 @@ export class WorldRenderer {
     this.local.dirty = true;
     this.path = null;
     this.pathIdx = 0;
+  }
+
+  /** BRICK WORLD M1: draw the claimable-plot marker for a frontier district.
+   *  A pulsing golden ring + label on its own layer above the players. */
+  setPlot(x: number, y: number, label: string): void {
+    this.clearPlot();
+    const px = x * TILE + TILE / 2;
+    const py = y * TILE + TILE / 2;
+    const g = new Graphics();
+    g.circle(px, py, TILE * 0.9).stroke({ width: 2, color: 0xffc46b, alpha: 0.9 });
+    g.circle(px, py, TILE * 0.55).stroke({ width: 1.5, color: 0xffc46b, alpha: 0.55 });
+    g.circle(px, py, 3).fill({ color: 0xffc46b, alpha: 0.9 });
+    this.plotRing = g;
+    const t = new Text(label, {
+      fontFamily: 'Nunito, system-ui, sans-serif',
+      fontSize: 11,
+      fontWeight: '700',
+      fill: 0xffc46b,
+    });
+    t.anchor.set(0.5, 0);
+    t.position.set(px, py + TILE * 0.7);
+    this.plotLayer.addChild(g, t);
+  }
+
+  clearPlot(): void {
+    this.plotLayer.removeChildren();
+    this.plotRing = null;
   }
 }

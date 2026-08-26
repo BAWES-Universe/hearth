@@ -86,6 +86,16 @@ func (h *Hub) handleWorldRoute(w http.ResponseWriter, r *http.Request) {
 		h.worldActivity(w, r, strings.TrimSuffix(id, "/activity"))
 		return
 	}
+	// BRICK WORLD M1: /api/worlds/{id}/chunk/{cx}/{cy} — seeded deterministic
+	// frontier district generation (procedural infinite world).
+	if strings.Contains(id, "/chunk/") {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h.handleFrontierChunk(w, r, id)
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return

@@ -18,6 +18,16 @@ import {
 import { resolveSpaceId, wsUrl } from './net/config';
 import { Net, type NetStatus } from './net/ws';
 import { WorldRenderer } from './world/renderer';
+import {
+  clearFrontier,
+  clampLocal,
+  districtWorld,
+  fetchDistrict,
+  loadFrontier,
+  saveFrontier,
+  DISTRICT,
+  type FrontierState,
+} from './world/frontier';
 import { uuid, type EditMsg, type FriendMsg, type FriendPresenceMsg, type PortalMsg, type PortalPayload } from './net/protocol';
 import { ChatSheet, type ChatMessage } from './ui/ChatSheet';
 import { Hud } from './ui/Hud';
@@ -147,6 +157,10 @@ export function App() {
   const mineRef = useRef<Set<string>>(new Set());
   const skipRecordRef = useRef(false);
   const portalCooldownRef = useRef(0);
+  // BRICK WORLD M1: current frontier district (null = authored world).
+  const frontierRef = useRef<FrontierState | null>(null);
+  const frontierBusyRef = useRef(false);
+  const frontierLastRef = useRef(0);
   const toastTimer = useRef<number | null>(null);
   const sheetOpenRef = useRef(false);
   const worldsQueryRef = useRef('');
@@ -403,6 +417,58 @@ export function App() {
     [resetMine],
   );
 
+  // BRICK WORLD M1: enter a seeded frontier district. Terrain is
+  // server-authoritative (GET /api/worlds/{id}/chunk/{cx}/{cy}) — the client
+  // never invents tiles. District (0,0) is the authored world itself, so
+  // walking back west/home fetches the real world doc and leaves the frontier.
+  const enterDistrict = useCallback(
+    async (cx: number, cy: number, entryX: number, entryY: number): Promise<boolean> => {
+      const r = rendererRef.current;
+      const worldId = lastSpaceRef.current;
+      if (!r || !worldId || frontierBusyRef.current) return false;
+      frontierBusyRef.current = true;
+      try {
+        if (cx === 0 && cy === 0) {
+          // Back to the authored world.
+          const sp = await fetchSpace(worldId);
+          if (!sp) return false;
+          const sz = sp as { width?: number; height?: number };
+          const w = sz.width ?? DISTRICT;
+          const h = sz.height ?? DISTRICT;
+          frontierRef.current = null;
+          clearFrontier(worldId);
+          r.setWorld(sp);
+          resetMine();
+          setCanEdit((sp as { canEdit?: boolean }).canEdit !== false);
+          r.setSelf(selfIdRef.current, selfNameRef.current || 'you', { spec: specRef.current });
+          r.setLocalPos(Math.min(Math.max(entryX, 0.5), w - 0.5), Math.min(Math.max(entryY, 0.5), h - 0.5));
+          setSpaceName(worldId);
+          showToast(`Back in ${worldId}`);
+          return true;
+        }
+        const doc = await fetchDistrict(worldId, cx, cy);
+        if (!doc) {
+          showToast(`Frontier unreachable (D${cx},${cy})`);
+          return false;
+        }
+        frontierRef.current = { worldId, cx, cy, x: entryX, y: entryY };
+        r.setWorld(districtWorld(doc));
+        resetMine();
+        setCanEdit(false); // frontier districts are read-only until claimed (M2)
+        if (doc.plot?.claimable) r.setPlot(doc.plot.x, doc.plot.y, 'CLAIMABLE PLOT');
+        r.setSelf(selfIdRef.current, selfNameRef.current || 'you', { spec: specRef.current });
+        r.setLocalPos(entryX, entryY);
+        setSpaceName(`${worldId} · D${cx},${cy}`);
+        saveFrontier(worldId, frontierRef.current!);
+        showToast(`Entering frontier district D${cx},${cy}`);
+        return true;
+      } finally {
+        frontierBusyRef.current = false;
+      }
+    },
+    [resetMine, showToast],
+  );
+
   const joinInto = useCallback(
     (space: string) => {
       const name = selfNameRef.current || 'guest';
@@ -431,6 +497,14 @@ export function App() {
             lastSpaceRef.current = sp;
             setSpaceName(sp);
             voiceRef.current?.enter(sp);
+          }
+          // BRICK WORLD M1: reload determinism — if this device last stood in
+          // a frontier district of this world, resume there (same coords →
+          // same district, same spot). Terrain comes from the server, so the
+          // reload renders the identical district for everyone.
+          const saved = loadFrontier(sp ?? lastSpaceRef.current);
+          if (saved && (saved.cx !== 0 || saved.cy !== 0)) {
+            void enterDistrict(saved.cx, saved.cy, saved.x, saved.y);
           }
           setPhase('world');
           setMode('play');
@@ -719,6 +793,63 @@ export function App() {
     return () => cancelAnimationFrame(raf);
   }, [phase, mode, view]);
 
+  // BRICK WORLD M1: edge-walk — when the local player steps off the current
+  // world's edge, fetch the seeded deterministic next district from the
+  // server and render it (walk east → D+1, west → D-1, etc.). District (0,0)
+  // is the authored world; crossing back into it returns to the real world.
+  useEffect(() => {
+    if (phase !== 'world' || mode !== 'play' || view !== 'world') return;
+    let raf = 0;
+    const M = 0.6; // crossing margin in tiles
+    const loop = () => {
+      raf = requestAnimationFrame(loop);
+      const r = rendererRef.current;
+      if (!r || frontierBusyRef.current) return;
+      const loc = r.getLocal();
+      if (!loc) return;
+      const size = r.getWorldSize();
+      if (!size || size.w < 2 || size.h < 2) return;
+      const now = performance.now();
+      if (now - frontierLastRef.current < 700) return; // settle after a swap
+      const cur = frontierRef.current;
+      const cx = cur?.cx ?? 0;
+      const cy = cur?.cy ?? 0;
+      let nx = cx;
+      let ny = cy;
+      let entryX = loc.x;
+      let entryY = loc.y;
+      let cross = false;
+      if (loc.x <= M) {
+        nx = cx - 1;
+        entryX = DISTRICT - 1.5;
+        entryY = clampLocal(loc.y);
+        cross = true;
+      } else if (loc.x >= size.w - M) {
+        nx = cx + 1;
+        entryX = 1.5;
+        entryY = clampLocal(loc.y);
+        cross = true;
+      }
+      if (loc.y <= M) {
+        ny = cy - 1;
+        entryY = DISTRICT - 1.5;
+        entryX = clampLocal(loc.x);
+        cross = true;
+      } else if (loc.y >= size.h - M) {
+        ny = cy + 1;
+        entryY = 1.5;
+        entryX = clampLocal(loc.x);
+        cross = true;
+      }
+      if (cross && (nx !== cx || ny !== cy)) {
+        frontierLastRef.current = now;
+        void enterDistrict(nx, ny, entryX, entryY);
+      }
+    };
+    loop();
+    return () => cancelAnimationFrame(raf);
+  }, [phase, mode, view, enterDistrict]);
+
   // ------------------------------------------------------------ chat
   const openChat = useCallback(() => {
     sheetOpenRef.current = true;
@@ -757,6 +888,7 @@ export function App() {
       selfId: () => selfIdRef.current,
       status: () => status,
       space: () => lastSpaceRef.current,
+      district: () => (frontierRef.current ? { ...frontierRef.current } : null),
       voice: () => voiceRef.current?.getState(),
     };
   }, [status]);
